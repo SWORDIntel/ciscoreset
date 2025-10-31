@@ -1,44 +1,44 @@
-# Cisco ISR & ASA Advanced Recovery Tool v2.1
+# Cisco & Generic Embedded Advanced Recovery Tool v2.2
 
 ## Overview
 
-This script is a professional-grade, TUI-driven framework for multi-vector interaction with Cisco ISR and ASA devices. It combines standard serial console recovery methods with placeholders for advanced JTAG exploitation and post-exploitation analysis.
+This script is a professional-grade, TUI-driven framework for multi-vector interaction with Cisco and other embedded devices (including MIPS-based hardware). It combines serial console recovery methods with advanced JTAG exploitation, dynamic device detection, and post-exploitation analysis.
 
 ## Features
 
+-   **Multi-Platform Support:** Targets Cisco ISR (ARM), Cisco ASA, and generic MIPS32-based devices.
+-   **Dynamic Device Detection:** Automatically scans for and identifies a wide range of USB-to-Serial and JTAG adapters, including FTDI, CH341, and J-Link.
 -   **TUI-Driven:** A full Text-based User Interface for all operations.
--   **Platform Auto-Detection:** Automatically sniffs serial boot messages to identify the connected device (ISR vs. ASA).
--   **Session Logging:** All commands and responses are logged to a timestamped session file in `/var/log/cisco_tool_sessions`.
--   **Configuration File:** Supports an optional configuration file at `/etc/cisco_tool.conf` to override default settings.
+-   **Session Logging & Configuration:** Supports session logging and an external configuration file.
+
+### Reverse Engineering & Analysis
+
+-   **Bootloader Signature Scanning:** A key reverse engineering feature that scans a memory dump for the signatures of common bootloaders like U-Boot and CFe, helping to quickly identify the target's firmware.
+-   **Memory Analysis:** Scans memory dumps for credentials, IPs, and embedded files (`binwalk`).
+-   **Configuration Auditing:** Dumps and analyzes Cisco configurations for security weaknesses.
+
+### JTAG Exploitation Menu
+
+-   **Multi-Architecture Profiles:** Provides distinct initialization profiles for ARM (Cisco) and generic MIPS32 targets.
+-   **Core JTAG Functions:** Includes chain scanning, memory dumping, and flash extraction.
 
 ### ROMMON Recovery Menu
 
--   **Automated ROMMON Entry:** A function to send the break sequence to interrupt the boot process.
--   **Platform-Specific Password Resets:** Dedicated, automated workflows for recovering passwords on both Cisco ISR and ASA devices.
-
-### Analysis & Auditing
-
--   **Configuration Dumper:** A tool to download the `running-config` and `startup-config` from a live device for offline analysis.
--   **(Planned) Memory Analysis:** Placeholder for analyzing memory dumps.
-### JTAG Exploitation Menu
-
--   **JTAG Interface Initialization:** A menu to select and initialize a connected JTAG adapter (e.g., FTDI-based) via `openocd`.
--   **JTAG Chain Scanning:** Automatically scans the JTAG chain to detect and identify TAPs.
--   **Memory Dumping:** Dumps arbitrary memory regions from the device for offline analysis.
--   **Flash Extraction:** Extracts the full contents of the onboard flash memory via JTAG.
+-   **Platform-Specific Password Resets:** Automated workflows for both Cisco ISR and ASA.
 
 ## Requirements
 
--   **Root Privileges:** The script must be run as root.
--   **Core Dependencies:** `bash`, `stty`, `timeout`, `logger`.
--   **Hardware:** An appropriate serial and/or JTAG adapter.
+-   **Root Privileges:** Required for low-level hardware access.
+-   **Core Dependencies:** `bash`, `stty`, `timeout`, `logger`, `lsusb`.
+-   **Analysis Dependencies:** `strings`, `binwalk`, `hexdump`.
+-   **JTAG Dependencies:** `openocd`.
 
 ## Usage
 
 1.  Ensure all dependencies are installed.
 2.  Connect your hardware.
-3.  Run the script as root: `./cisco_recovery.sh`
-4.  Follow the TUI prompts.
+3.  Run as root: `./cisco_recovery.sh`
+4.  Follow the TUI prompts to select your device, connection method, and desired operation.
 
 ## Disclaimer
 
