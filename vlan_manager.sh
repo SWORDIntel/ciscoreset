@@ -5,6 +5,7 @@ IFS=$'\n\t'
 
 # --- Configuration & Helpers ---
 SERIAL_DEVICE=""
+CONFIG_FILE=""
 TIMEOUT=10
 die() { echo "ERROR: $1" >&2; exit 1; }
 print_header() { clear; echo "======================================"; echo "  Unified VLAN Management Tool"; echo "======================================"; echo; }
@@ -30,12 +31,38 @@ nortel_tag_ports() {
     nortel_send_cmd "ports $ports"; nortel_send_cmd "tag"
 }
 provision_nortel() {
-    local config_file="nortel_vlans.txt"; [[ ! -f "$config_file" ]] && die "Config file not found: $config_file"
-    read -p "Enter Nortel username: " username; read -sp "Enter password: " password; echo
+    local config_file="${CONFIG_FILE:-nortel_vlans.txt}"; [[ ! -f "$config_file" ]] && die "Config file not found: $config_file"
+
     echo "Connecting..."; stty -F "$SERIAL_DEVICE" 9600 -echo raw; exec 3<> "$SERIAL_DEVICE"
-    while read -t $TIMEOUT line <&3; do if [[ "$line" == *"User Name:"* ]]; then echo "$username" >&3; break; fi; done
-    while read -t $TIMEOUT line <&3; do if [[ "$line" == *"Password:"* ]]; then echo "$password" >&3; break; fi; done
-    while read -t $TIMEOUT line <&3; do if [[ "$line" == *"->"* ]]; then echo "Login successful."; break; fi; done
+
+    # --- Improved Login Loop ---
+    while true; do
+        read -p "Enter Nortel username: " username; read -sp "Enter password: " password; echo
+
+        # Wait for username prompt and send
+        while read -t $TIMEOUT line <&3; do if [[ "$line" == *"User Name:"* ]]; then echo "$username" >&3; break; fi; done
+        # Wait for password prompt and send
+        while read -t $TIMEOUT line <&3; do if [[ "$line" == *"Password:"* ]]; then echo "$password" >&3; break; fi; done
+
+        # Check for success or failure
+        local login_success=false
+        while read -t 3 line <&3; do
+            line=$(echo "$line" | tr -d '\r')
+            if [[ "$line" == *"Incorrect"* ]]; then
+                echo "Login failed. Please try again."
+                break # Breaks inner loop to retry credentials
+            elif [[ "$line" == *"->"* ]]; then
+                login_success=true
+                break
+            fi
+        done
+
+        if [[ "$login_success" = true ]]; then
+            echo "Login successful."
+            break # Breaks outer loop to continue with script
+        fi
+    done
+
     while IFS= read -r line; do
         [[ "$line" =~ ^# || -z "$line" ]] && continue; local vlan="" name="" ports="" tag=""
         IFS=',' read -r -a pairs <<< "$line"; for p in "${pairs[@]}"; do p=$(echo "$p"|tr -d ' '); k="${p%%=*}"; v="${p#*=}"; case "$k" in VLAN) vlan="$v";; NAME) name="$v";; PORTS) ports="$v";; TAG) tag="$v";; esac; done
@@ -53,24 +80,55 @@ cisco_send_cmd() {
 }
 provision_cisco_device() {
     local config_file="$2"; [[ ! -f "$config_file" ]] && die "Config file not found: $config_file"
-    read -p "Enter Cisco enable password (if any): " password; echo
+
     echo "Connecting..."; stty -F "$SERIAL_DEVICE" 9600 -echo raw; exec 3<> "$SERIAL_DEVICE"
-    cisco_send_cmd ""; cisco_send_cmd "enable"; cisco_send_cmd "$password"
-    local login_success=false
-    while read -t 2 line <&3; do if [[ "$line" == *"#"* ]]; then login_success=true; break; fi; done
-    [[ "$login_success" = false ]] && die "Failed to enter enable mode."
-    echo "Login successful."
+    cisco_send_cmd "" # Get a prompt
+
+    # --- Improved Login Loop ---
+    while true; do
+        read -sp "Enter Cisco enable password: " password; echo
+        cisco_send_cmd "enable"
+        cisco_send_cmd "$password"
+
+        local login_success=false
+        local failure_detected=false
+        while read -t 3 line <&3; do
+            line=$(echo "$line" | tr -d '\r')
+            if [[ "$line" == *"% Bad secrets"* || "$line" == *"% Invalid input"* ]]; then
+                failure_detected=true
+                break
+            elif [[ "$line" == *"#"* ]]; then
+                login_success=true
+                break
+            fi
+        done
+
+        if [[ "$login_success" = true ]]; then
+            echo "Login successful."
+            break
+        else
+            echo "Login failed. Please try again."
+            # Send newline to get back to a stable '>' prompt
+            cisco_send_cmd ""
+        fi
+    done
     cisco_send_cmd "configure terminal"
     echo "Applying config from $config_file..."
     while IFS= read -r cmd; do [[ "$cmd" =~ ^# || -z "$cmd" ]] && continue; cisco_send_cmd "$cmd"; done < "$config_file"
     cisco_send_cmd "end"; cisco_send_cmd "write memory"; echo "Configuration saved."; exec 3<&-
 }
-provision_cisco_isr() { provision_cisco_device "ISR" "isr_vlans.txt"; }
-provision_cisco_asa() { provision_cisco_device "ASA" "asa_vlans.txt"; }
+provision_cisco_isr() { provision_cisco_device "ISR" "${CONFIG_FILE:-isr_vlans.txt}"; }
+provision_cisco_asa() { provision_cisco_device "ASA" "${CONFIG_FILE:-asa_vlans.txt}"; }
 
 # --- Main TUI & Logic ---
-while [[ "$#" -gt 0 ]]; do case $1 in --device) SERIAL_DEVICE="$2"; shift ;; *) die "Unknown parameter: $1" ;; esac; shift; done
-[[ -z "$SERIAL_DEVICE" ]] && die "Usage: $0 --device <path>"
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        --device) SERIAL_DEVICE="$2"; shift ;;
+        --config) CONFIG_FILE="$2"; shift ;;
+        *) die "Unknown parameter: $1" ;;
+    esac; shift
+done
+[[ -z "$SERIAL_DEVICE" ]] && die "Usage: $0 --device <path> [--config <file>]"
 while true; do
     print_header; echo "Targeting serial device: $SERIAL_DEVICE"
     echo "Select a device to provision: 1) Nortel 5520  2) Cisco ISR  3) Cisco ASA  q) Quit"
