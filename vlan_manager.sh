@@ -6,6 +6,7 @@ IFS=$'\n\t'
 # --- Configuration & Helpers ---
 SERIAL_DEVICE=""
 CONFIG_FILE=""
+BAUD_RATE="9600" # Default baud rate
 TIMEOUT=10
 die() { echo "ERROR: $1" >&2; exit 1; }
 print_header() { clear; echo "======================================"; echo "  Unified VLAN Management Tool"; echo "======================================"; echo; }
@@ -33,7 +34,7 @@ nortel_tag_ports() {
 provision_nortel() {
     local config_file="${CONFIG_FILE:-nortel_vlans.txt}"; [[ ! -f "$config_file" ]] && die "Config file not found: $config_file"
 
-    echo "Connecting..."; stty -F "$SERIAL_DEVICE" 9600 -echo raw; exec 3<> "$SERIAL_DEVICE"
+    echo "Connecting..."; stty -F "$SERIAL_DEVICE" "$BAUD_RATE" -echo raw; exec 3<> "$SERIAL_DEVICE"
 
     # --- Improved Login Loop ---
     while true; do
@@ -66,7 +67,15 @@ provision_nortel() {
     while IFS= read -r line; do
         [[ "$line" =~ ^# || -z "$line" ]] && continue; local vlan="" name="" ports="" tag=""
         IFS=',' read -r -a pairs <<< "$line"; for p in "${pairs[@]}"; do p=$(echo "$p"|tr -d ' '); k="${p%%=*}"; v="${p#*=}"; case "$k" in VLAN) vlan="$v";; NAME) name="$v";; PORTS) ports="$v";; TAG) tag="$v";; esac; done
-        [[ -z "$vlan" || -z "$ports" ]] && { echo "WARNING: Invalid line: $line"; continue; }
+        [[ -z "$vlan" || -z "$ports" ]] && { echo "WARNING: Skipping invalid line (missing VLAN or PORTS): $line"; continue; }
+
+        # --- Input Validation ---
+        local port_regex='^[0-9,-]+$'
+        if ! [[ "$ports" =~ $port_regex && ( -z "$tag" || "$tag" =~ $port_regex ) ]]; then
+            echo "WARNING: Skipping invalid line (malformed PORTS or TAG field): $line"
+            continue
+        fi
+
         nortel_provision_vlan "$vlan" "$name"; nortel_assign_ports "$vlan" "$ports"
         if [[ -n "$tag" ]]; then nortel_tag_ports "$vlan" "$tag"; fi; echo "---"
     done < "$config_file"
@@ -81,7 +90,7 @@ cisco_send_cmd() {
 provision_cisco_device() {
     local config_file="$2"; [[ ! -f "$config_file" ]] && die "Config file not found: $config_file"
 
-    echo "Connecting..."; stty -F "$SERIAL_DEVICE" 9600 -echo raw; exec 3<> "$SERIAL_DEVICE"
+    echo "Connecting..."; stty -F "$SERIAL_DEVICE" "$BAUD_RATE" -echo raw; exec 3<> "$SERIAL_DEVICE"
     cisco_send_cmd "" # Get a prompt
 
     # --- Improved Login Loop ---
@@ -125,10 +134,11 @@ while [[ "$#" -gt 0 ]]; do
     case $1 in
         --device) SERIAL_DEVICE="$2"; shift ;;
         --config) CONFIG_FILE="$2"; shift ;;
+        --baud) BAUD_RATE="$2"; shift ;;
         *) die "Unknown parameter: $1" ;;
     esac; shift
 done
-[[ -z "$SERIAL_DEVICE" ]] && die "Usage: $0 --device <path> [--config <file>]"
+[[ -z "$SERIAL_DEVICE" ]] && die "Usage: $0 --device <path> [--config <file>] [--baud <rate>]"
 while true; do
     print_header; echo "Targeting serial device: $SERIAL_DEVICE"
     echo "Select a device to provision: 1) Nortel 5520  2) Cisco ISR  3) Cisco ASA  q) Quit"

@@ -20,9 +20,9 @@ It uses a simple TUI to ask which device you want to configure and then reads th
 1.  **Create Config Files:** Create one or more of the following files in the same directory as the script: `nortel_vlans.txt`, `isr_vlans.txt`, `asa_vlans.txt`. (See formats below).
 
 2.  **Run the Script:**
-    Make the script executable (`chmod +x vlan_manager.sh`) and run it, providing the path to your serial device and optionally a custom config file:
+    Make the script executable (`chmod +x vlan_manager.sh`) and run it with the required `--device` flag and optional flags for baud rate and a custom config file:
     ```bash
-    ./vlan_manager.sh --device /dev/ttyUSB0 --config /path/to/my_vlans.txt
+    ./vlan_manager.sh --device /dev/ttyUSB0 --baud 115200 --config /path/to/my_vlans.txt
     ```
     The script will prompt you to select a device and then ask for the necessary credentials.
 
