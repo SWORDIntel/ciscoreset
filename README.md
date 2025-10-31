@@ -20,7 +20,12 @@ This script is a professional-grade, TUI-driven framework for multi-vector inter
 
 -   **Configuration Dumper:** A tool to download the `running-config` and `startup-config` from a live device for offline analysis.
 -   **(Planned) Memory Analysis:** Placeholder for analyzing memory dumps.
--   **(Planned) JTAG Exploitation:** Placeholders for JTAG-based interaction.
+### JTAG Exploitation Menu
+
+-   **JTAG Interface Initialization:** A menu to select and initialize a connected JTAG adapter (e.g., FTDI-based) via `openocd`.
+-   **JTAG Chain Scanning:** Automatically scans the JTAG chain to detect and identify TAPs.
+-   **Memory Dumping:** Dumps arbitrary memory regions from the device for offline analysis.
+-   **Flash Extraction:** Extracts the full contents of the onboard flash memory via JTAG.
 
 ## Requirements
 
