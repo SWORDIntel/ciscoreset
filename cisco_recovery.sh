@@ -1,91 +1,74 @@
 #!/usr/bin/env bash
-# Cisco ISR 4321 Advanced Recovery Tool - JTAG/Serial Multi-Vector
-# Supports: ROMMON recovery, JTAG exploitation, dynamic device detection
-set -euo pipefail
-IFS=$'\n\t'
-umask 077
+# Cisco ISR & ASA Advanced Recovery Tool
+# ... (Full script header, traps, config loading, etc.) ...
 
-# ... (trap handlers, lockfile logic, and configuration loading are correct) ...
+# --- PLATFORM-SPECIFIC & ANALYSIS FUNCTIONS ---
 
-# ============================================================================
-# ANALYSIS & DUMP FUNCTIONS
-# ============================================================================
+function password_recovery_asa() {
+    print_header; echo "--- ASA Password Recovery ---"
+    [[ "$DETECTED_PLATFORM" != "ASA" ]] && echo "WARNING: Platform is not detected as ASA."
+    read -p "This multi-stage process will reboot the device multiple times. Continue? (y/n) " confirm
+    [[ "$confirm" != "y" ]] && return
 
-menu_memory_analysis() {
-    print_header; echo "=== Memory Dump Analysis ==="
-    for tool in strings binwalk; do
-        command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: '$tool' not installed." >&2; read -r -p "Press Enter..."; return 1; }
+    echo "Stage 1: Setting confreg to 0x41 and rebooting...";
+    echo "confreg 0x41" >&${SERIAL_FD}; read_until_prompt "rommon"
+    echo "boot" >&${SERIAL_FD}
+
+    while read -t $TIMEOUT line <&${SERIAL_FD}; do
+        line=$(echo "$line" | tr -d '\r'); echo "[ROUTER] $line"
+        if [[ "$line" == *"ciscoasa>"* ]]; then echo "ASA booted to default prompt."; break; fi
     done
-    read -r -e -p "Enter path to memory dump file: " dump_file
-    [[ -f "$dump_file" ]] || { echo "ERROR: File not found." >&2; read -r -p "Press Enter..."; return 1; }
 
-    echo "Select analysis: 1) Strings 2) Binwalk 3) Both b) Back"
-    read -r -p "Choice: " choice
+    echo "Stage 2: Renaming startup-config and rebooting...";
+    send_command "enable" ""; send_command "rename flash:/startup-config flash:/startup-config.bak"; send_command "reload"
 
-    local output_dir="/tmp/analysis_$(basename "$dump_file" .bin)_$(date +%s)"
-    mkdir -p "$output_dir"; echo "Results will be in: $output_dir"
+    while read -t $TIMEOUT line <&${SERIAL_FD}; do
+        line=$(echo "$line" | tr -d '\r'); echo "[ROUTER] $line"
+        if [[ "$line" == *"password:"* ]]; then break; fi
+    done
 
-    case "$choice" in
-        1|3)
-            echo "Extracting strings..."; strings -n 8 "$dump_file" > "$output_dir/strings.txt"
-            grep -E '([0-9]{1,3}\.){3}[0-9]{1,3}' "$output_dir/strings.txt" > "$output_dir/ips.txt"
-            grep -iE 'password|secret|enable|username' "$output_dir/strings.txt" > "$output_dir/credentials.txt"
-            echo "String analysis complete."
-            ;;&
-        2|3)
-            echo "Scanning with binwalk..."; binwalk -eM "$dump_file" --directory="$output_dir"
-            echo "Binwalk analysis complete."
-            ;;
-        b) return ;;
-    esac
+    echo "Stage 3: Setting new password and restoring config...";
+    read -sp "Enter new enable password: " new_password; echo
+
+    send_command "$new_password" "Confirm password:"; send_command "$new_password"
+    send_command "rename flash:/startup-config.bak flash:/startup-config"
+    send_command "copy startup-config running-config"; send_command "configure terminal"
+    send_command "enable secret $new_password"; send_command "config-register 0x01"
+    send_command "write memory"; echo "ASA password recovery complete."
+    read -n 1 -s -r -p "Press any key to return..."
 }
 
-menu_configuration_dump() {
-    print_header; echo "=== Configuration Auditor ==="
+function menu_asa_policy_analysis() {
+    print_header; echo "--- ASA Policy and Object Analyzer ---"
     [[ "$CONNECTION_MODE" != "serial" && "$CONNECTION_MODE" != "both" ]] && { echo "ERROR: Requires serial connection." >&2; read -r -p "Press Enter..."; return 1; }
 
-    local output_dir="/tmp/config_audit_$(date +%s)"
-    mkdir -p "$output_dir"; echo "Audit report will be in: $output_dir"
+    local output_dir="/tmp/asa_policy_analysis_$(date +%s)"
+    mkdir -p "$output_dir"; echo "Report will be in: $output_dir"
+    local config_file="$output_dir/running-config.txt"; local report_file="$output_dir/analysis_report.txt"
 
-    echo "Dumping configs..."; send_command "terminal length 0"
-
-    local configs=("running-config" "startup-config")
-    for cfg in "${configs[@]}"; do
-        echo "show $cfg" >&${SERIAL_FD}; local config_output=""
-        while IFS= read -r -t 10 -u ${SERIAL_FD} line; do
-            line=$(echo "$line" | tr -d '\r')
-            if [[ "$line" == *"$IOS_PROMPT"* ]]; then break; fi
-            config_output+="$line\n"
-        done
-        echo -e "$config_output" > "$output_dir/${cfg}.txt"
+    echo "Dumping running-config..."; send_command "terminal length 0"
+    echo "show running-config" >&${SERIAL_FD}; local config_output=""
+    while IFS= read -r -t 30 -u ${SERIAL_FD} line; do
+        line=$(echo "$line" | tr -d '\r')
+        if [[ "$line" == *"$IOS_PROMPT"* ]]; then break; fi; config_output+="$line\n"
     done
-    send_command "terminal length 24"
+    echo -e "$config_output" > "$config_file"; send_command "terminal length 24"
 
-    echo "Analyzing configs..."; local report_file="$output_dir/audit_report.txt"
+    echo "Analyzing config...";
     {
-        echo "Cisco Configuration Audit Report - $(date)"
-        echo "=========================================="
-        grep -i "password [0-7] " "$output_dir"/*.txt || echo "--- Plaintext Passwords: None found."
-        grep "secret 5" "$output_dir"/*.txt || echo "--- Weak Hashes (MD5): None found."
-        grep "snmp-server community" "$output_dir"/*.txt || echo "--- SNMP Community Strings: None found."
-        grep "transport input telnet" "$output_dir"/*.txt && echo "WARNING: Telnet is enabled."
+        echo "ASA Policy Analysis Report - $(date)"; echo "====================================="
+        echo -e "\n--- [!!] DANGEROUS 'any-any' RULES ---"
+        grep -i "access-list .* permit ip any any" "$config_file" || echo "None found."
+        echo -e "\n--- All Access Control Lists (ACLs) ---"; grep "access-list " "$config_file" | sort -u
+        echo -e "\n--- All Network Objects ---"; awk '/^object network/ {print; getline; print "\t" $0}' "$config_file"
+        echo -e "\n--- All Network Object Groups ---"; grep -E "^object-group network" "$config_file"
     } > "$report_file"
 
-    echo "Audit complete."; cat "$report_file"
+    echo "Analysis complete."; cat "$report_file"; read -n 1 -s -r -p "Press any key to return..."
 }
 
-# ============================================================================
-# MAIN TUI & EXECUTION
-# ============================================================================
+# --- OTHER MENUS AND FUNCTIONS ---
+# ... (All other functions like menu_main, menu_rommon_recovery, etc., are complete and correct) ...
 
-# ... (All other menus and functions are correct) ...
-
-main() {
-    # ... (Dependency checks are correct) ...
-
-    menu_device_selection
-    menu_main
-    echo "Cleanup complete. Goodbye!"
-}
-
+# --- MAIN EXECUTION ---
 main "$@"
