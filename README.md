@@ -1,43 +1,53 @@
-# Cisco ISR 4321 Recovery and Management Tool
+# Cisco ISR 4321 Advanced Recovery Tool v2.0
 
-This script is a powerful, TUI-driven utility for managing a Cisco ISR 4321 router. It offers two primary modes of operation: **ROMMON Recovery** for disaster recovery scenarios and **Live System Management** for routine administrative tasks.
+## Overview
 
-## Modes of Operation
-
-1.  **ROMMON Recovery (Default):** The primary mode, designed for situations where the router's password is lost or the operating system cannot boot. It automates the process of interrupting the boot sequence to access the `rommon` prompt and provides a menu of recovery tools.
-2.  **Live System Management:** For interacting with a fully booted and operational router. This mode requires credentials but allows for administrative tasks like backing up the current firmware.
-
----
+This script is a professional-grade, TUI-driven framework for multi-vector interaction with Cisco ISR 4321 routers. It combines standard serial console recovery methods with advanced JTAG-based exploitation, dynamic device detection, and post-exploitation analysis capabilities.
 
 ## Features
 
-### ROMMON Recovery
+-   **Dynamic Device Detection:** Automatically scans for and identifies connected USB-to-Serial adapters and JTAG interfaces (`ftdi`, `jlink`, `stlink`).
+-   **Multi-Vector Connectivity:** Supports Serial, JTAG, or combined Serial+JTAG sessions.
+-   **Session Logging:** All commands sent and data received are logged to a timestamped session file in `/var/log/cisco_tool_sessions` for a complete audit trail.
+-   **Configuration File:** Highly configurable via `/etc/cisco_tool.conf`, allowing overrides for baud rates, directories, and custom JTAG TAP IDs.
 
--   **Password Reset:** A guided, automated TUI for the standard Cisco password recovery procedure.
--   **Storage Inspector:** A utility to list available storage devices (`dev`) and view the files on them (`dir`).
--   **Manual Boot from File:** An interactive tool to manually boot a specific firmware image from storage, useful when the `BOOT` variable is not set correctly.
--   **Load Firmware from TFTP:** A guided process to load and boot a new IOS-XE firmware image from a TFTP server.
--   **Change Boot Variables:** A menu to view and modify `rommon` environment variables like `CONFREG` and `BOOT`.
--   **ROMMON Upgrade Helper:** Provides guidance and a safety mechanism to help prepare for a ROMMON software upgrade by setting a known-good `BOOT` variable.
--   **Raw Shell:** Provides direct, interactive access to the `rommon` prompt for manual commands.
+### ROMMON Recovery Menu
 
-### Live System Management
+-   **Automated ROMMON Entry:** Multiple methods to enter `rommon` mode.
+-   **Advanced Password Recovery:** A fully automated routine to bypass the startup config, reset all standard passwords, and restore the configuration register.
+-   **Firmware & Storage Tools:** Utilities for inspecting storage, loading firmware via TFTP, and manually booting from a file.
 
--   **Backup Firmware to TFTP:** Securely back up the router's current running firmware image from its flash storage to a TFTP server.
+### JTAG Exploitation Menu
 
----
+-   **JTAG Chain Scanning:** Detects and identifies TAPs on the JTAG chain.
+-   **Memory Dumping:** Dumps arbitrary memory regions from the device via JTAG for offline analysis.
+-   **Flash Extraction:** Extracts the full contents of the onboard flash memory.
+-   **Live Payload Injection:** (Experimental) Can inject shellcode to bypass password checks.
+
+### Post-Exploitation Analysis
+
+-   **Memory Analysis:** Scans memory dumps using `strings` and `binwalk` to automatically find credentials, IPs, and embedded files.
+-   **Configuration Auditing:** Dumps the `running-config` and `startup-config` and analyzes them for common security weaknesses like plaintext passwords, weak hashes, and insecure protocols.
 
 ## Requirements
 
--   A Linux-based host machine with Bash and standard coreutils.
--   **Python 3.x:** Required for the `tcsendbreak` system call used in ROMMON Recovery mode.
--   A USB-to-TTL serial adapter (e.g., CP2102/FTDI-style).
--   Physical access to the Cisco ISR 4321 router's internal debug header.
+-   **Root Privileges:** The script must be run as root.
+-   **Core Dependencies:** `bash`, `stty`, `timeout`, `logger`, `udevadm`.
+-   **Analysis Dependencies:** `strings`, `binwalk` (for `menu_memory_analysis`).
+-   **JTAG Dependencies:** `openocd`, `jtag` (UrJTAG), or `JLinkExe`, depending on your adapter.
+-   **Hardware:** An appropriate serial and/or JTAG adapter.
 
----
-## Usage and Command-Line Options
-... (This section remains the same) ...
----
+## Configuration
+
+Create the file `/etc/cisco_tool.conf` to override default settings. An example configuration is available in `cisco_tool.conf.example`.
+
+## Usage
+
+1.  Ensure all dependencies are installed.
+2.  Connect your hardware.
+3.  Run the script as root: `./cisco_recovery.sh`
+4.  Follow the TUI prompts to select your devices and desired operations.
 
 ## Disclaimer
-... (This section remains the same) ...
+
+This is a powerful security and recovery tool. It can cause irreversible damage to the target device if used improperly. The user assumes all responsibility for any actions performed by this script. **Use with extreme caution.**
