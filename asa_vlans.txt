@@ -1,0 +1,9 @@
+# Cisco ASA VLAN Configuration
+# Enter the exact commands as you would in 'configure terminal' mode.
+
+vlan 10
+ name DMZ-SERVERS
+vlan 15
+ name GUEST-WIFI
+vlan 20
+ name CORP-WIFI

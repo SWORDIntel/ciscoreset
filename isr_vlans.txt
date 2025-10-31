@@ -1,0 +1,11 @@
+# Cisco ISR VLAN Configuration
+# Enter the exact commands as you would in 'configure terminal' mode.
+
+vlan 10
+ name VOICE
+vlan 20
+ name DATA
+vlan 30
+ name IOT
+vlan 99
+ name MANAGEMENT

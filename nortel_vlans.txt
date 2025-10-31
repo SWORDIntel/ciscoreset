@@ -1,7 +1,5 @@
-# Example VLAN configuration for Nortel 5520 Switch
-#
+# Nortel VLAN Configuration
 # Format: VLAN=<id>, NAME=<name>, PORTS=<port-range>, TAG=<tag-range>
-# NAME and TAG are optional.
 
 VLAN=100, NAME=SERVERS, PORTS=1-12, TAG=48
 VLAN=200, NAME=WORKSTATIONS, PORTS=13-24

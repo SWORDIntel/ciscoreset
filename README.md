@@ -1,47 +1,59 @@
-# Nortel 5520 Automated VLAN Provisioner
+# Unified VLAN Management Tool
 
-This script automates the configuration of VLANs and port assignments on a Nortel 5520 series switch. It reads a simple text file (`vlan_config.txt`) that defines the desired VLANs, names, and port mappings, and then connects to the switch's serial console to execute the necessary menu commands.
+This script provides a single, easy-to-use interface for provisioning VLANs across a multi-vendor network stack, including Nortel, Cisco ISR, and Cisco ASA devices.
+
+It uses a simple TUI to ask which device you want to configure and then reads the desired configuration from a device-specific text file.
 
 ## Features
 
--   **Automated Configuration:** Drastically reduces the manual effort required to provision VLANs.
--   **Declarative Configuration:** Define your entire VLAN setup in a simple, human-readable text file.
--   **Supports Tagged and Untagged Ports:** Can configure ports as members of a VLAN and also tag them for trunking.
+-   **Unified Interface:** Manage VLANs on Nortel, Cisco ISR, and Cisco ASA from a single script.
+-   **Simple, Declarative Config:** Uses easy-to-understand, separate configuration files for each device type.
+-   **Automated Interaction:** Handles the specific connection, login, and command execution for each device's unique interface (Nortel menu vs. Cisco CLI).
 
 ## Requirements
 
 -   A Linux-based host machine with `bash`.
--   A USB-to-TTL serial adapter.
--   Console access to a Nortel 5520 series switch.
+-   A USB-to-TTL serial adapter for console access.
 
 ## Usage
 
-1.  **Create `vlan_config.txt`:**
-    Create a file named `vlan_config.txt` in the same directory as the script. Define your VLANs in this file using the format below.
+1.  **Create Config Files:** Create one or more of the following files in the same directory as the script: `nortel_vlans.txt`, `isr_vlans.txt`, `asa_vlans.txt`. (See formats below).
 
 2.  **Run the Script:**
-    Make the script executable (`chmod +x nortel_vlan_provisioner.sh`) and run it, providing the path to your serial device:
+    Make the script executable (`chmod +x vlan_manager.sh`) and run it, providing the path to your serial device:
     ```bash
-    ./nortel_vlan_provisioner.sh --device /dev/ttyUSB0
+    ./vlan_manager.sh --device /dev/ttyUSB0
     ```
-    The script will prompt you for the switch's username and password before proceeding.
+    The script will prompt you to select a device and then ask for the necessary credentials.
 
-## `vlan_config.txt` Format
+---
 
-Each line in the file represents one VLAN. The format is a comma-separated list of key-value pairs.
+## Configuration File Formats
 
-**Required Keys:**
--   `VLAN`: The VLAN ID (e.g., `100`).
--   `PORTS`: The port range to be assigned to this VLAN (e.g., `1-12`, `13,15,17-20`).
+### `nortel_vlans.txt`
 
-**Optional Keys:**
--   `NAME`: A descriptive name for the VLAN (e.g., `SERVERS`).
--   `TAG`: A port range to be tagged for this VLAN (e.g., `47-48`).
+For Nortel 5520 series switches. Each line is a comma-separated list of key-value pairs.
+-   **Keys:** `VLAN`, `NAME`, `PORTS`, `TAG`.
+-   **Example:** `VLAN=100, NAME=SERVERS, PORTS=1-12, TAG=48`
 
-### Example `vlan_config.txt`
+### `isr_vlans.txt`
 
-```
-VLAN=100, NAME=SERVERS, PORTS=1-12, TAG=48
-VLAN=200, NAME=WORKSTATIONS, PORTS=13-24
-VLAN=300, NAME=GUEST, PORTS=25-47, TAG=48
-```
+For Cisco ISR routers running IOS. This file contains the exact sequence of commands needed to create the VLANs and their names, as you would type them in `configure terminal` mode.
+-   **Example:**
+    ```
+    vlan 10
+     name VOICE
+    vlan 20
+     name DATA
+    ```
+
+### `asa_vlans.txt`
+
+For Cisco ASA firewalls. This file is similar to the ISR file but typically only involves the VLAN ID and name. Interface assignments, `nameif`, and `security-level` are handled separately.
+-   **Example:**
+    ```
+    vlan 10
+     name DMZ-SERVERS
+    vlan 15
+     name GUEST-WIFI
+    ```
