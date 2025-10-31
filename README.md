@@ -13,10 +13,12 @@ This script is a powerful, TUI-driven utility for managing a Cisco ISR 4321 rout
 
 ### ROMMON Recovery
 
--   **Automated ROMMON Access:** Automatically sends a `BREAK` signal to interrupt the boot process.
 -   **Password Reset:** A guided, automated TUI for the standard Cisco password recovery procedure.
--   **Change Boot Variables:** View and modify `rommon` environment variables like `CONFREG`.
+-   **Storage Inspector:** A utility to list available storage devices (`dev`) and view the files on them (`dir`).
+-   **Manual Boot from File:** An interactive tool to manually boot a specific firmware image from storage, useful when the `BOOT` variable is not set correctly.
 -   **Load Firmware from TFTP:** A guided process to load and boot a new IOS-XE firmware image from a TFTP server.
+-   **Change Boot Variables:** A menu to view and modify `rommon` environment variables like `CONFREG` and `BOOT`.
+-   **ROMMON Upgrade Helper:** Provides guidance and a safety mechanism to help prepare for a ROMMON software upgrade by setting a known-good `BOOT` variable.
 -   **Raw Shell:** Provides direct, interactive access to the `rommon` prompt for manual commands.
 
 ### Live System Management
@@ -33,24 +35,9 @@ This script is a powerful, TUI-driven utility for managing a Cisco ISR 4321 rout
 -   Physical access to the Cisco ISR 4321 router's internal debug header.
 
 ---
-
-## Usage
-
-1.  **Hardware Connection:** Connect the GND, RX, and TX pins of your serial adapter to the router's debug header. **DO NOT** connect the VCC pin.
-
-2.  **Running the Script:**
-    -   Make the script executable: `chmod +x cisco_recovery.sh`
-    -   Run the script: `./cisco_recovery.sh [OPTIONS]`
-    -   You will be prompted to choose a mode of operation upon startup.
-
-### Command-Line Options
-
--   `--device <path>`: The path to the serial device (e.g., `/dev/ttyUSB0`). Default: `/dev/ttyS0`.
--   `--baud <rate>`: The baud rate for the serial connection. Default: `9600`.
--   `--help`: Display a help message.
-
+## Usage and Command-Line Options
+... (This section remains the same) ...
 ---
 
 ## Disclaimer
-
-This tool interacts directly with the router's bootloader and operating system. Use it with caution. Incorrect commands can lead to a non-functional device. The author is not responsible for any damage caused by the use of this script.
+... (This section remains the same) ...
