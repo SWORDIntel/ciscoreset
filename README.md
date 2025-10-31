@@ -1,59 +1,40 @@
-# Unified VLAN Management Tool
+# Cisco ISR & ASA Advanced Recovery Tool v2.1
 
-This script provides a single, easy-to-use interface for provisioning VLANs across a multi-vendor network stack, including Nortel, Cisco ISR, and Cisco ASA devices.
+## Overview
 
-It uses a simple TUI to ask which device you want to configure and then reads the desired configuration from a device-specific text file.
+This script is a professional-grade, TUI-driven framework for multi-vector interaction with Cisco ISR and ASA devices. It combines standard serial console recovery methods with placeholders for advanced JTAG exploitation and post-exploitation analysis.
 
 ## Features
 
--   **Unified Interface:** Manage VLANs on Nortel, Cisco ISR, and Cisco ASA from a single script.
--   **Simple, Declarative Config:** Uses easy-to-understand, separate configuration files for each device type.
--   **Automated Interaction:** Handles the specific connection, login, and command execution for each device's unique interface (Nortel menu vs. Cisco CLI).
+-   **TUI-Driven:** A full Text-based User Interface for all operations.
+-   **Platform Auto-Detection:** Automatically sniffs serial boot messages to identify the connected device (ISR vs. ASA).
+-   **Session Logging:** All commands and responses are logged to a timestamped session file in `/var/log/cisco_tool_sessions`.
+-   **Configuration File:** Supports an optional configuration file at `/etc/cisco_tool.conf` to override default settings.
+
+### ROMMON Recovery Menu
+
+-   **Automated ROMMON Entry:** A function to send the break sequence to interrupt the boot process.
+-   **Platform-Specific Password Resets:** Dedicated, automated workflows for recovering passwords on both Cisco ISR and ASA devices.
+
+### Analysis & Auditing
+
+-   **Configuration Dumper:** A tool to download the `running-config` and `startup-config` from a live device for offline analysis.
+-   **(Planned) Memory Analysis:** Placeholder for analyzing memory dumps.
+-   **(Planned) JTAG Exploitation:** Placeholders for JTAG-based interaction.
 
 ## Requirements
 
--   A Linux-based host machine with `bash`.
--   A USB-to-TTL serial adapter for console access.
+-   **Root Privileges:** The script must be run as root.
+-   **Core Dependencies:** `bash`, `stty`, `timeout`, `logger`.
+-   **Hardware:** An appropriate serial and/or JTAG adapter.
 
 ## Usage
 
-1.  **Create Config Files:** Create one or more of the following files in the same directory as the script: `nortel_vlans.txt`, `isr_vlans.txt`, `asa_vlans.txt`. (See formats below).
+1.  Ensure all dependencies are installed.
+2.  Connect your hardware.
+3.  Run the script as root: `./cisco_recovery.sh`
+4.  Follow the TUI prompts.
 
-2.  **Run the Script:**
-    Make the script executable (`chmod +x vlan_manager.sh`) and run it with the required `--device` flag and optional flags for baud rate and a custom config file:
-    ```bash
-    ./vlan_manager.sh --device /dev/ttyUSB0 --baud 115200 --config /path/to/my_vlans.txt
-    ```
-    The script will prompt you to select a device and then ask for the necessary credentials.
+## Disclaimer
 
----
-
-## Configuration File Formats
-
-### `nortel_vlans.txt`
-
-For Nortel 5520 series switches. Each line is a comma-separated list of key-value pairs.
--   **Keys:** `VLAN`, `NAME`, `PORTS`, `TAG`.
--   **Example:** `VLAN=100, NAME=SERVERS, PORTS=1-12, TAG=48`
-
-### `isr_vlans.txt`
-
-For Cisco ISR routers running IOS. This file contains the exact sequence of commands needed to create the VLANs and their names, as you would type them in `configure terminal` mode.
--   **Example:**
-    ```
-    vlan 10
-     name VOICE
-    vlan 20
-     name DATA
-    ```
-
-### `asa_vlans.txt`
-
-For Cisco ASA firewalls. This file is similar to the ISR file but typically only involves the VLAN ID and name. Interface assignments, `nameif`, and `security-level` are handled separately.
--   **Example:**
-    ```
-    vlan 10
-     name DMZ-SERVERS
-    vlan 15
-     name GUEST-WIFI
-    ```
+This is a powerful security and recovery tool. Use with extreme caution.

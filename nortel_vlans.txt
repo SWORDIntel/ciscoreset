@@ -1,6 +1,0 @@
-# Nortel VLAN Configuration
-# Format: VLAN=<id>, NAME=<name>, PORTS=<port-range>, TAG=<tag-range>
-
-VLAN=100, NAME=SERVERS, PORTS=1-12, TAG=48
-VLAN=200, NAME=WORKSTATIONS, PORTS=13-24
-VLAN=300, NAME=GUEST, PORTS=25-47, TAG=48
