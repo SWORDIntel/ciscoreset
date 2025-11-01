@@ -12,7 +12,6 @@ This script is a professional-grade, TUI-driven framework for multi-vector inter
 
 ### JTAG Exploitation Menu
 
--   **Active Memory Manipulation (Live Patching):** A dangerous but powerful feature to write a 32-bit value to an arbitrary memory address on the target device, enabling live patching and exploitation.
 -   **Data Exfiltration:** Includes tools for dumping memory regions and extracting the full contents of flash memory via JTAG.
 -   **Multi-Architecture Profiles:** Provides distinct initialization profiles for ARM and MIPS targets.
 
