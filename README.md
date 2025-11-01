@@ -19,6 +19,10 @@ This script is a professional-grade, TUI-driven framework for multi-vector inter
 
 -   **Automated Filesystem Analysis:** A powerful feature that performs a security sweep on a `binwalk`-extracted filesystem. It automatically finds sensitive files, searches for hardcoded credentials, and analyzes executables.
 -   **Bootloader Signature Scanning:** Scans memory dumps for the signatures of common bootloaders like U-Boot and CFe.
+
+### Firmware Manipulation Menu
+
+-   **JTAG Flash Writing (DANGEROUS):** Provides the ability to write a firmware image (`*.bin`) directly to the device's flash memory via JTAG. This is a powerful tool for installing custom or patched firmware, but can permanently brick the device if used incorrectly.
 -   **Configuration Auditing:** Dumps and analyzes Cisco configurations for security weaknesses.
 
 ### ROMMON Recovery Menu
