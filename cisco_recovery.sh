@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Cisco & Generic Embedded Advanced Recovery Tool v2.7
+# Cisco & Generic Embedded Advanced Recovery Tool v2.8
 #
 # A TUI-based toolkit for automating password recovery, JTAG exploitation,
-# JTAG cable assisted recovery, firmware modification, and firmware analysis on Cisco and other embedded devices.
+# JTAG cable assisted recovery, firmware modification, advanced firmware analysis,
+# and bootloader development on Cisco and other embedded devices.
 
 # Exit on error, undefined variable, or pipe failure
 set -euo pipefail
@@ -2272,6 +2273,1121 @@ menu_firmware_workshop() {
 
 # --- End Firmware Modification Workshop ---
 
+# --- Advanced Firmware Analysis Suite ---
+
+firmware_automated_teardown() {
+    print_header
+    echo "=== Automated Firmware Teardown Analyzer ==="
+    echo
+    echo "This performs a comprehensive automated analysis of firmware:"
+    echo "  - File type and format identification"
+    echo "  - Entropy analysis (detect encryption/compression)"
+    echo "  - String extraction and categorization"
+    echo "  - Function signature detection"
+    echo "  - Embedded file detection"
+    echo "  - Architecture detection"
+    echo
+
+    read -r -p "Enter path to firmware file: " firmware_file
+
+    if [ ! -f "$firmware_file" ]; then
+        echo "ERROR: File not found: $firmware_file"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    local output_dir="${SESSION_DIR}/teardown_$(basename "$firmware_file")"
+    mkdir -p "$output_dir"
+
+    log_message "INFO" "Starting automated firmware teardown: $firmware_file"
+
+    echo
+    echo ">>> Step 1/6: File Identification"
+    echo "-----------------------------------"
+    if command -v file &> /dev/null; then
+        file "$firmware_file" | tee "$output_dir/file_type.txt"
+    else
+        echo "WARNING: 'file' command not available"
+    fi
+
+    echo
+    echo ">>> Step 2/6: Entropy Analysis"
+    echo "-------------------------------"
+    if command -v binwalk &> /dev/null; then
+        echo "Analyzing entropy (high entropy = encrypted/compressed)..."
+        binwalk -E "$firmware_file" 2>&1 | tee "$output_dir/entropy.txt"
+    else
+        echo "WARNING: binwalk not available, skipping entropy analysis"
+    fi
+
+    echo
+    echo ">>> Step 3/6: String Extraction & Categorization"
+    echo "------------------------------------------------"
+    if command -v strings &> /dev/null; then
+        local strings_file="$output_dir/all_strings.txt"
+        echo "Extracting readable strings..."
+        strings "$firmware_file" > "$strings_file"
+        local total_strings=$(wc -l < "$strings_file")
+        echo "  Total strings found: $total_strings"
+
+        # Categorize interesting strings
+        echo
+        echo "Categorizing interesting patterns:"
+
+        # URLs and IPs
+        grep -Ei '(https?://|ftp://|[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})' "$strings_file" > "$output_dir/urls_ips.txt" 2>/dev/null
+        local url_count=$(wc -l < "$output_dir/urls_ips.txt" 2>/dev/null || echo 0)
+        echo "  URLs/IPs: $url_count found → $output_dir/urls_ips.txt"
+
+        # Passwords and credentials
+        grep -Ei '(password|passwd|pwd|secret|key|token|api|auth|credential)' "$strings_file" > "$output_dir/credentials.txt" 2>/dev/null
+        local cred_count=$(wc -l < "$output_dir/credentials.txt" 2>/dev/null || echo 0)
+        echo "  Credential patterns: $cred_count found → $output_dir/credentials.txt"
+
+        # File paths
+        grep -E '^(/[a-zA-Z0-9_\-./]+|[A-Z]:\\)' "$strings_file" > "$output_dir/paths.txt" 2>/dev/null
+        local path_count=$(wc -l < "$output_dir/paths.txt" 2>/dev/null || echo 0)
+        echo "  File paths: $path_count found → $output_dir/paths.txt"
+
+        # Version strings
+        grep -Ei '(version|v[0-9]+\.[0-9]+|build|release)' "$strings_file" > "$output_dir/versions.txt" 2>/dev/null
+        local ver_count=$(wc -l < "$output_dir/versions.txt" 2>/dev/null || echo 0)
+        echo "  Version strings: $ver_count found → $output_dir/versions.txt"
+
+        # Email addresses
+        grep -Ei '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' "$strings_file" > "$output_dir/emails.txt" 2>/dev/null
+        local email_count=$(wc -l < "$output_dir/emails.txt" 2>/dev/null || echo 0)
+        echo "  Email addresses: $email_count found → $output_dir/emails.txt"
+    else
+        echo "WARNING: 'strings' command not available"
+    fi
+
+    echo
+    echo ">>> Step 4/6: Function Signature Detection"
+    echo "------------------------------------------"
+    if command -v strings &> /dev/null; then
+        # Look for common function patterns and symbols
+        local symbols_file="$output_dir/function_signatures.txt"
+        echo "Searching for function signatures..."
+
+        # Common function prefixes/patterns
+        strings "$firmware_file" | grep -E '^[a-zA-Z_][a-zA-Z0-9_]*\(' > "$symbols_file" 2>/dev/null || true
+        strings "$firmware_file" | grep -Ei '(main|init|setup|boot|start|exit|printf|scanf|malloc|free)' >> "$symbols_file" 2>/dev/null || true
+
+        local func_count=$(sort -u "$symbols_file" | wc -l 2>/dev/null || echo 0)
+        echo "  Function-like symbols: $func_count unique patterns found"
+        echo "  → $symbols_file"
+
+        # Look for common library indicators
+        echo
+        echo "Library/Framework Detection:"
+        strings "$firmware_file" | grep -Ei '(openssl|libc|glibc|uclibc|busybox|dropbear|openssh|u-boot)' | sort -u | head -20
+    else
+        echo "WARNING: 'strings' command not available"
+    fi
+
+    echo
+    echo ">>> Step 5/6: Embedded File Detection"
+    echo "--------------------------------------"
+    if command -v binwalk &> /dev/null; then
+        echo "Scanning for embedded files and filesystems..."
+        binwalk "$firmware_file" 2>&1 | tee "$output_dir/embedded_files.txt"
+    else
+        echo "WARNING: binwalk not available"
+    fi
+
+    echo
+    echo ">>> Step 6/6: Architecture Detection"
+    echo "-------------------------------------"
+    if command -v binwalk &> /dev/null; then
+        echo "Detecting CPU architecture..."
+        binwalk -A "$firmware_file" 2>&1 | head -30 | tee "$output_dir/architecture.txt"
+    else
+        echo "WARNING: binwalk not available for architecture detection"
+        echo "Attempting basic heuristic detection..."
+        if strings "$firmware_file" | grep -qi 'arm'; then
+            echo "  Potential ARM architecture detected (ARM strings found)"
+        fi
+        if strings "$firmware_file" | grep -qi 'mips'; then
+            echo "  Potential MIPS architecture detected (MIPS strings found)"
+        fi
+        if strings "$firmware_file" | grep -qi 'x86\|i386\|i686'; then
+            echo "  Potential x86 architecture detected (x86 strings found)"
+        fi
+    fi
+
+    echo
+    echo "========================================="
+    echo "Teardown Complete!"
+    echo "========================================="
+    echo "All results saved to: $output_dir"
+    echo
+    echo "Summary:"
+    echo "  - File type: $(head -1 "$output_dir/file_type.txt" 2>/dev/null || echo 'N/A')"
+    echo "  - Analysis directory: $output_dir"
+    echo
+
+    log_message "INFO" "Firmware teardown completed: $output_dir"
+
+    read -r -p "Press Enter to continue..."
+}
+
+firmware_binary_diff() {
+    print_header
+    echo "=== Binary Firmware Differ ==="
+    echo
+    echo "Compare two firmware versions to identify changes:"
+    echo "  - Byte-level differences"
+    echo "  - Added/removed strings"
+    echo "  - Changed functions"
+    echo "  - Modified embedded files"
+    echo
+
+    read -r -p "Enter path to ORIGINAL firmware: " fw1
+    read -r -p "Enter path to MODIFIED firmware: " fw2
+
+    if [ ! -f "$fw1" ]; then
+        echo "ERROR: Original firmware not found: $fw1"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    if [ ! -f "$fw2" ]; then
+        echo "ERROR: Modified firmware not found: $fw2"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    local diff_dir="${SESSION_DIR}/diff_$(date +%s)"
+    mkdir -p "$diff_dir"
+
+    log_message "INFO" "Starting firmware binary diff: $fw1 vs $fw2"
+
+    echo
+    echo ">>> Step 1/5: File Size Comparison"
+    echo "-----------------------------------"
+    local size1=$(stat -c%s "$fw1" 2>/dev/null || stat -f%z "$fw1" 2>/dev/null)
+    local size2=$(stat -c%s "$fw2" 2>/dev/null || stat -f%z "$fw2" 2>/dev/null)
+    echo "  Original: $size1 bytes"
+    echo "  Modified: $size2 bytes"
+    echo "  Difference: $((size2 - size1)) bytes"
+
+    echo
+    echo ">>> Step 2/5: Checksum Comparison"
+    echo "----------------------------------"
+    if command -v md5sum &> /dev/null; then
+        echo "  Original MD5: $(md5sum "$fw1" | awk '{print $1}')"
+        echo "  Modified MD5: $(md5sum "$fw2" | awk '{print $1}')"
+    fi
+    if command -v sha256sum &> /dev/null; then
+        echo "  Original SHA256: $(sha256sum "$fw1" | awk '{print $1}')"
+        echo "  Modified SHA256: $(sha256sum "$fw2" | awk '{print $1}')"
+    fi
+
+    echo
+    echo ">>> Step 3/5: String Differences"
+    echo "---------------------------------"
+    if command -v strings &> /dev/null; then
+        echo "Extracting strings from both files..."
+        strings "$fw1" | sort -u > "$diff_dir/strings_fw1.txt"
+        strings "$fw2" | sort -u > "$diff_dir/strings_fw2.txt"
+
+        echo "Computing differences..."
+
+        # Strings only in fw1 (removed)
+        comm -23 "$diff_dir/strings_fw1.txt" "$diff_dir/strings_fw2.txt" > "$diff_dir/strings_removed.txt"
+        local removed_count=$(wc -l < "$diff_dir/strings_removed.txt")
+
+        # Strings only in fw2 (added)
+        comm -13 "$diff_dir/strings_fw1.txt" "$diff_dir/strings_fw2.txt" > "$diff_dir/strings_added.txt"
+        local added_count=$(wc -l < "$diff_dir/strings_added.txt")
+
+        echo "  Removed strings: $removed_count → $diff_dir/strings_removed.txt"
+        echo "  Added strings: $added_count → $diff_dir/strings_added.txt"
+
+        if [ "$added_count" -gt 0 ]; then
+            echo
+            echo "Sample of added strings (first 20):"
+            head -20 "$diff_dir/strings_added.txt" | sed 's/^/    /'
+        fi
+    else
+        echo "WARNING: 'strings' command not available"
+    fi
+
+    echo
+    echo ">>> Step 4/5: Binary Hex Diff"
+    echo "------------------------------"
+    if command -v xxd &> /dev/null && command -v diff &> /dev/null; then
+        echo "Generating hexdump diff (this may take a while for large files)..."
+        xxd "$fw1" > "$diff_dir/hex_fw1.txt" 2>/dev/null &
+        local pid1=$!
+        xxd "$fw2" > "$diff_dir/hex_fw2.txt" 2>/dev/null &
+        local pid2=$!
+
+        wait $pid1 $pid2
+
+        diff -u "$diff_dir/hex_fw1.txt" "$diff_dir/hex_fw2.txt" > "$diff_dir/hex_diff.txt" 2>/dev/null || true
+
+        local diff_lines=$(wc -l < "$diff_dir/hex_diff.txt" 2>/dev/null || echo 0)
+        echo "  Hex diff generated: $diff_lines lines → $diff_dir/hex_diff.txt"
+
+        # Count changed bytes
+        local changed_bytes=$(grep -c '^[<>]' "$diff_dir/hex_diff.txt" 2>/dev/null || echo 0)
+        echo "  Approximate changed regions: $changed_bytes"
+    else
+        echo "WARNING: xxd or diff not available for hex comparison"
+    fi
+
+    echo
+    echo ">>> Step 5/5: Embedded File Comparison"
+    echo "---------------------------------------"
+    if command -v binwalk &> /dev/null; then
+        echo "Scanning for embedded files in both firmwares..."
+        binwalk "$fw1" > "$diff_dir/binwalk_fw1.txt" 2>&1
+        binwalk "$fw2" > "$diff_dir/binwalk_fw2.txt" 2>&1
+
+        echo "  Original embedded files:"
+        grep -c 'DECIMAL' "$diff_dir/binwalk_fw1.txt" 2>/dev/null || echo "  0"
+        echo "  Modified embedded files:"
+        grep -c 'DECIMAL' "$diff_dir/binwalk_fw2.txt" 2>/dev/null || echo "  0"
+        echo
+        echo "  See detailed binwalk output:"
+        echo "    $diff_dir/binwalk_fw1.txt"
+        echo "    $diff_dir/binwalk_fw2.txt"
+    else
+        echo "WARNING: binwalk not available"
+    fi
+
+    echo
+    echo "========================================="
+    echo "Binary Diff Complete!"
+    echo "========================================="
+    echo "All results saved to: $diff_dir"
+    echo
+
+    log_message "INFO" "Binary diff completed: $diff_dir"
+
+    read -r -p "Press Enter to continue..."
+}
+
+firmware_vulnerability_scan() {
+    print_header
+    echo "=== Firmware Vulnerability Scanner ==="
+    echo
+    echo "Scans firmware for common security issues:"
+    echo "  - Hardcoded credentials (passwords, keys, tokens)"
+    echo "  - Dangerous function calls (strcpy, gets, system)"
+    echo "  - Weak cryptographic algorithms (MD5, DES, RC4)"
+    echo "  - Common CVE patterns"
+    echo "  - Debug/backdoor strings"
+    echo "  - Private keys and certificates"
+    echo
+
+    read -r -p "Enter path to firmware file: " firmware_file
+
+    if [ ! -f "$firmware_file" ]; then
+        echo "ERROR: File not found: $firmware_file"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    local vuln_dir="${SESSION_DIR}/vulnscan_$(basename "$firmware_file")"
+    mkdir -p "$vuln_dir"
+
+    log_message "INFO" "Starting vulnerability scan: $firmware_file"
+
+    echo
+    echo ">>> Scan 1/7: Hardcoded Credentials"
+    echo "------------------------------------"
+    if command -v strings &> /dev/null; then
+        echo "Searching for credential patterns..."
+        local cred_file="$vuln_dir/credentials.txt"
+
+        strings "$firmware_file" | grep -Ei '(password|passwd|pwd|secret|api_key|apikey|token|auth.*=|key.*=)' > "$cred_file" 2>/dev/null || true
+
+        # Look for common default passwords
+        strings "$firmware_file" | grep -Ei '(admin|root|cisco|default|12345|password123)' >> "$cred_file" 2>/dev/null || true
+
+        local cred_count=$(sort -u "$cred_file" | wc -l 2>/dev/null || echo 0)
+        echo "  ALERT: Found $cred_count potential credential strings"
+
+        if [ "$cred_count" -gt 0 ]; then
+            echo "  Sample findings (first 15):"
+            sort -u "$cred_file" | head -15 | sed 's/^/    /'
+            echo "  → Full list: $cred_file"
+        fi
+    else
+        echo "WARNING: 'strings' command not available"
+    fi
+
+    echo
+    echo ">>> Scan 2/7: Dangerous Functions"
+    echo "----------------------------------"
+    if command -v strings &> /dev/null; then
+        echo "Searching for unsafe C functions..."
+        local unsafe_file="$vuln_dir/unsafe_functions.txt"
+
+        # Dangerous C functions
+        strings "$firmware_file" | grep -Eo '\b(strcpy|strcat|sprintf|gets|scanf|vsprintf|system|popen|exec|eval)\b' > "$unsafe_file" 2>/dev/null || true
+
+        local unsafe_count=$(sort -u "$unsafe_file" | wc -l 2>/dev/null || echo 0)
+
+        if [ "$unsafe_count" -gt 0 ]; then
+            echo "  WARNING: Found references to $unsafe_count dangerous functions:"
+            sort -u "$unsafe_file" | sed 's/^/    - /'
+            echo "  → $unsafe_file"
+        else
+            echo "  OK: No obvious dangerous function calls found"
+        fi
+    fi
+
+    echo
+    echo ">>> Scan 3/7: Weak Cryptography"
+    echo "--------------------------------"
+    if command -v strings &> /dev/null; then
+        echo "Searching for weak crypto algorithms..."
+        local crypto_file="$vuln_dir/weak_crypto.txt"
+
+        strings "$firmware_file" | grep -Ei '\b(MD5|DES|RC4|SHA1|md5|des|rc4|sha1)\b' > "$crypto_file" 2>/dev/null || true
+
+        local crypto_count=$(sort -u "$crypto_file" | wc -l 2>/dev/null || echo 0)
+
+        if [ "$crypto_count" -gt 0 ]; then
+            echo "  WARNING: Found $crypto_count references to weak crypto:"
+            sort -u "$crypto_file" | head -10 | sed 's/^/    /'
+            echo "  → $crypto_file"
+        else
+            echo "  OK: No obvious weak crypto references found"
+        fi
+    fi
+
+    echo
+    echo ">>> Scan 4/7: Private Keys & Certificates"
+    echo "------------------------------------------"
+    if command -v strings &> /dev/null; then
+        echo "Searching for embedded keys..."
+        local keys_file="$vuln_dir/private_keys.txt"
+
+        strings "$firmware_file" | grep -E '(BEGIN.*PRIVATE KEY|BEGIN RSA PRIVATE KEY|BEGIN DSA PRIVATE KEY|BEGIN EC PRIVATE KEY|BEGIN CERTIFICATE)' > "$keys_file" 2>/dev/null || true
+
+        local keys_count=$(wc -l < "$keys_file" 2>/dev/null || echo 0)
+
+        if [ "$keys_count" -gt 0 ]; then
+            echo "  CRITICAL: Found $keys_count embedded private keys/certificates!"
+            cat "$keys_file" | sed 's/^/    /'
+            echo "  → $keys_file"
+        else
+            echo "  OK: No PEM-formatted private keys found"
+        fi
+    fi
+
+    echo
+    echo ">>> Scan 5/7: Debug & Backdoor Strings"
+    echo "---------------------------------------"
+    if command -v strings &> /dev/null; then
+        echo "Searching for debug/backdoor indicators..."
+        local debug_file="$vuln_dir/debug_backdoor.txt"
+
+        strings "$firmware_file" | grep -Ei '(debug|backdoor|test.*mode|admin.*mode|root.*shell|hidden|secret.*menu)' > "$debug_file" 2>/dev/null || true
+
+        local debug_count=$(sort -u "$debug_file" | wc -l 2>/dev/null || echo 0)
+
+        if [ "$debug_count" -gt 0 ]; then
+            echo "  WARNING: Found $debug_count potential debug/backdoor strings"
+            echo "  Sample findings (first 10):"
+            sort -u "$debug_file" | head -10 | sed 's/^/    /'
+            echo "  → $debug_file"
+        else
+            echo "  OK: No obvious debug/backdoor strings found"
+        fi
+    fi
+
+    echo
+    echo ">>> Scan 6/7: SQL Injection Patterns"
+    echo "-------------------------------------"
+    if command -v strings &> /dev/null; then
+        echo "Searching for SQL query patterns..."
+        local sql_file="$vuln_dir/sql_patterns.txt"
+
+        strings "$firmware_file" | grep -Ei '(SELECT.*FROM|INSERT INTO|UPDATE.*SET|DELETE FROM|DROP TABLE|UNION SELECT)' > "$sql_file" 2>/dev/null || true
+
+        local sql_count=$(wc -l < "$sql_file" 2>/dev/null || echo 0)
+
+        if [ "$sql_count" -gt 0 ]; then
+            echo "  INFO: Found $sql_count SQL query strings"
+            echo "  Review for potential injection vulnerabilities"
+            echo "  → $sql_file"
+        else
+            echo "  OK: No SQL patterns detected"
+        fi
+    fi
+
+    echo
+    echo ">>> Scan 7/7: Common CVE Patterns"
+    echo "----------------------------------"
+    if command -v strings &> /dev/null; then
+        echo "Searching for known vulnerable components..."
+        local cve_file="$vuln_dir/cve_patterns.txt"
+
+        # Look for version strings of commonly vulnerable software
+        strings "$firmware_file" | grep -Ei '(openssl.*0\.|openssh.*[0-6]\.|busybox.*1\.1[0-9]\.|dropbear.*201[0-5])' > "$cve_file" 2>/dev/null || true
+
+        local cve_count=$(wc -l < "$cve_file" 2>/dev/null || echo 0)
+
+        if [ "$cve_count" -gt 0 ]; then
+            echo "  WARNING: Found $cve_count potentially outdated components:"
+            cat "$cve_file" | sed 's/^/    /'
+            echo "  → $cve_file"
+            echo "  NOTE: Verify versions and check CVE databases"
+        else
+            echo "  INFO: No obvious outdated component signatures found"
+        fi
+    fi
+
+    echo
+    echo "========================================="
+    echo "Vulnerability Scan Complete!"
+    echo "========================================="
+    echo "Results saved to: $vuln_dir"
+    echo
+    echo "SUMMARY OF FINDINGS:"
+    echo "  - Review all files in $vuln_dir"
+    echo "  - Pay special attention to private keys and hardcoded credentials"
+    echo "  - Verify any weak crypto usage"
+    echo "  - Check for unsafe functions in security-critical code"
+    echo
+
+    log_message "INFO" "Vulnerability scan completed: $vuln_dir"
+
+    read -r -p "Press Enter to continue..."
+}
+
+menu_firmware_analysis_suite() {
+    while true; do
+        print_header
+        echo "--- Advanced Firmware Analysis Suite ---"
+        echo
+        echo "  1) Automated Firmware Teardown"
+        echo "     (Comprehensive analysis: entropy, strings, functions, architecture)"
+        echo
+        echo "  2) Binary Firmware Differ"
+        echo "     (Compare two firmware versions for changes)"
+        echo
+        echo "  3) Vulnerability Scanner"
+        echo "     (Scan for hardcoded credentials, weak crypto, dangerous functions)"
+        echo
+        echo "  b) Back to Main Menu"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1) firmware_automated_teardown ;;
+            2) firmware_binary_diff ;;
+            3) firmware_vulnerability_scan ;;
+            b) break ;;
+            *) echo "Invalid option." && sleep 1 ;;
+        esac
+    done
+}
+
+# --- End Advanced Firmware Analysis Suite ---
+
+# --- Bootloader Development Kit ---
+
+bootloader_uboot_modifier() {
+    print_header
+    echo "=== U-Boot Bootloader Modifier ==="
+    echo
+    echo "Modify U-Boot bootloader images for custom configurations:"
+    echo "  - Patch environment variables"
+    echo "  - Modify boot commands"
+    echo "  - Change boot delays"
+    echo "  - Update network settings"
+    echo "  - Disable signature verification"
+    echo
+
+    read -r -p "Enter path to U-Boot image: " uboot_file
+
+    if [ ! -f "$uboot_file" ]; then
+        echo "ERROR: U-Boot file not found: $uboot_file"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    local modified_file="${uboot_file}.modified"
+    cp "$uboot_file" "$modified_file"
+
+    log_message "INFO" "Starting U-Boot modification: $uboot_file"
+
+    while true; do
+        print_header
+        echo "=== U-Boot Modifier - $(basename "$uboot_file") ==="
+        echo
+        echo "Modified file: $modified_file"
+        echo
+        echo "  1) Change Boot Delay"
+        echo "  2) Modify Boot Command (bootcmd)"
+        echo "  3) Patch Environment Variable"
+        echo "  4) Disable Signature Verification (NOP injection)"
+        echo "  5) Change Network Settings (IP/Server)"
+        echo "  6) Search for Strings in U-Boot"
+        echo "  7) View U-Boot Header Info"
+        echo "  8) Save and Exit"
+        echo "  b) Discard and Exit"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1)
+                echo
+                echo "--- Change Boot Delay ---"
+                echo "Current bootdelay strings in image:"
+                strings "$modified_file" | grep -i 'bootdelay' | head -5
+                echo
+                read -r -p "Enter new boot delay (seconds, e.g., 0 for instant boot): " new_delay
+
+                # Find and replace bootdelay= pattern
+                if command -v sed &> /dev/null; then
+                    # This is a simplified approach - in reality U-Boot env is more complex
+                    echo "Searching for bootdelay references..."
+
+                    # Create a hex pattern for bootdelay=X
+                    local search_pattern="bootdelay="
+                    local offsets=$(strings -t d "$modified_file" | grep 'bootdelay=' | awk '{print $1}')
+
+                    if [ -n "$offsets" ]; then
+                        echo "Found bootdelay at offsets: $offsets"
+                        echo "NOTE: Manual hex editing recommended for precise modification"
+                        echo "You can use: xxd -s <offset> $modified_file to verify"
+                    else
+                        echo "No bootdelay string found in binary"
+                    fi
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            2)
+                echo
+                echo "--- Modify Boot Command ---"
+                echo "Common boot commands found:"
+                strings "$modified_file" | grep -Ei '(bootcmd|boot|run)' | head -10
+                echo
+                read -r -p "Enter search string to replace: " search_str
+                read -r -p "Enter replacement string (same length or shorter): " replace_str
+
+                if command -v xxd &> /dev/null; then
+                    # Find offset of string
+                    local offset=$(strings -t d "$modified_file" | grep -F "$search_str" | head -1 | awk '{print $1}')
+
+                    if [ -n "$offset" ]; then
+                        echo "Found at offset: $offset (0x$(printf '%x' $offset))"
+
+                        # Pad replacement string if needed
+                        local search_len=${#search_str}
+                        local replace_len=${#replace_str}
+
+                        if [ $replace_len -le $search_len ]; then
+                            # Pad with nulls
+                            local padded_replace="$replace_str"
+                            while [ ${#padded_replace} -lt $search_len ]; do
+                                padded_replace="${padded_replace}\x00"
+                            done
+
+                            echo "Applying patch..."
+                            printf "%s" "$replace_str" | dd of="$modified_file" bs=1 seek="$offset" conv=notrunc 2>/dev/null
+
+                            # Null-pad the rest
+                            local pad_len=$((search_len - replace_len))
+                            if [ $pad_len -gt 0 ]; then
+                                dd if=/dev/zero of="$modified_file" bs=1 seek=$((offset + replace_len)) count=$pad_len conv=notrunc 2>/dev/null
+                            fi
+
+                            echo "SUCCESS: Patched bootcmd"
+                            log_message "INFO" "Modified U-Boot bootcmd: $search_str -> $replace_str"
+                        else
+                            echo "ERROR: Replacement string too long!"
+                        fi
+                    else
+                        echo "ERROR: String not found in image"
+                    fi
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            3)
+                echo
+                echo "--- Patch Environment Variable ---"
+                echo "Environment variables found:"
+                strings "$modified_file" | grep '=' | head -20
+                echo
+                read -r -p "Enter variable name (e.g., serverip): " var_name
+                read -r -p "Enter new value: " var_value
+
+                local search_pattern="${var_name}="
+                local replacement="${var_name}=${var_value}"
+
+                echo "Searching for ${search_pattern}..."
+                local offset=$(strings -t d "$modified_file" | grep -F "$search_pattern" | head -1 | awk '{print $1}')
+
+                if [ -n "$offset" ]; then
+                    echo "Found at offset: $offset"
+
+                    # Find the full current value
+                    local current_value=$(strings "$modified_file" | grep "^${search_pattern}" | head -1)
+                    local current_len=${#current_value}
+                    local new_len=${#replacement}
+
+                    if [ $new_len -le $current_len ]; then
+                        printf "%s" "$replacement" | dd of="$modified_file" bs=1 seek="$offset" conv=notrunc 2>/dev/null
+
+                        # Null-pad
+                        local pad_len=$((current_len - new_len))
+                        if [ $pad_len -gt 0 ]; then
+                            dd if=/dev/zero of="$modified_file" bs=1 seek=$((offset + new_len)) count=$pad_len conv=notrunc 2>/dev/null
+                        fi
+
+                        echo "SUCCESS: Modified $var_name"
+                        log_message "INFO" "Modified U-Boot env var: $var_name=$var_value"
+                    else
+                        echo "ERROR: New value too long (max: $current_len chars)"
+                    fi
+                else
+                    echo "ERROR: Variable $var_name not found"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            4)
+                echo
+                echo "--- Disable Signature Verification ---"
+                echo "WARNING: This will NOP out signature check functions"
+                echo "This may permanently modify bootloader security!"
+                echo
+                read -r -p "Enter function name to NOP (e.g., verify_signature): " func_name
+
+                echo "Searching for $func_name..."
+                local offset=$(strings -t d "$modified_file" | grep -F "$func_name" | head -1 | awk '{print $1}')
+
+                if [ -n "$offset" ]; then
+                    echo "Found reference at offset: $offset"
+                    echo "NOTE: This only NOPs the string reference, not the function code"
+                    echo "For ARM: Use 0x00 0x00 0xA0 0xE1 (NOP)"
+                    echo "For MIPS: Use 0x00 0x00 0x00 0x00 (NOP)"
+                    echo
+                    read -r -p "Enter NOP byte pattern (hex, e.g., 0000A0E1 for ARM): " nop_pattern
+                    read -r -p "Enter number of bytes to NOP: " nop_count
+
+                    # Convert hex pattern to binary
+                    echo "$nop_pattern" | xxd -r -p | dd of="$modified_file" bs=1 seek="$offset" count="$nop_count" conv=notrunc 2>/dev/null
+
+                    echo "SUCCESS: Applied NOP patch"
+                    log_message "INFO" "NOPped U-Boot function: $func_name at offset $offset"
+                else
+                    echo "ERROR: Function reference not found"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            5)
+                echo
+                echo "--- Change Network Settings ---"
+                echo "Current network-related strings:"
+                strings "$modified_file" | grep -Ei '(ipaddr|serverip|netmask|gateway)' | head -10
+                echo
+                echo "  1) Change IP Address (ipaddr)"
+                echo "  2) Change Server IP (serverip)"
+                echo "  3) Change Netmask"
+                echo "  4) Change Gateway"
+                echo
+                read -r -p "Choose setting to modify: " net_choice
+
+                local var_to_modify=""
+                case "$net_choice" in
+                    1) var_to_modify="ipaddr" ;;
+                    2) var_to_modify="serverip" ;;
+                    3) var_to_modify="netmask" ;;
+                    4) var_to_modify="gateway" ;;
+                    *) echo "Invalid choice" && sleep 1 && continue ;;
+                esac
+
+                read -r -p "Enter new $var_to_modify value: " new_ip
+
+                local search_pattern="${var_to_modify}="
+                local offset=$(strings -t d "$modified_file" | grep -F "$search_pattern" | head -1 | awk '{print $1}')
+
+                if [ -n "$offset" ]; then
+                    local current_value=$(strings "$modified_file" | grep "^${search_pattern}" | head -1)
+                    local current_len=${#current_value}
+                    local replacement="${var_to_modify}=${new_ip}"
+                    local new_len=${#replacement}
+
+                    if [ $new_len -le $current_len ]; then
+                        printf "%s" "$replacement" | dd of="$modified_file" bs=1 seek="$offset" conv=notrunc 2>/dev/null
+
+                        # Null-pad
+                        local pad_len=$((current_len - new_len))
+                        if [ $pad_len -gt 0 ]; then
+                            dd if=/dev/zero of="$modified_file" bs=1 seek=$((offset + new_len)) count=$pad_len conv=notrunc 2>/dev/null
+                        fi
+
+                        echo "SUCCESS: Modified $var_to_modify to $new_ip"
+                        log_message "INFO" "Modified U-Boot network: $var_to_modify=$new_ip"
+                    else
+                        echo "ERROR: New value too long"
+                    fi
+                else
+                    echo "ERROR: Variable $var_to_modify not found"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            6)
+                echo
+                echo "--- Search Strings in U-Boot ---"
+                read -r -p "Enter search pattern: " search_term
+                echo
+                echo "Results:"
+                strings -t d "$modified_file" | grep -i "$search_term"
+                echo
+                read -r -p "Press Enter to continue..."
+                ;;
+            7)
+                echo
+                echo "--- U-Boot Header Info ---"
+                if command -v file &> /dev/null; then
+                    file "$modified_file"
+                fi
+                echo
+                echo "File size: $(stat -c%s "$modified_file" 2>/dev/null || stat -f%z "$modified_file" 2>/dev/null) bytes"
+                echo
+                echo "Potential U-Boot version:"
+                strings "$modified_file" | grep -Ei '(U-Boot|version|build)' | head -10
+                echo
+                read -r -p "Press Enter to continue..."
+                ;;
+            8)
+                echo
+                echo "Modified U-Boot saved to: $modified_file"
+                log_message "INFO" "U-Boot modification completed: $modified_file"
+                read -r -p "Press Enter to continue..."
+                return 0
+                ;;
+            b)
+                echo "Discarding changes..."
+                rm -f "$modified_file"
+                return 0
+                ;;
+            *)
+                echo "Invalid option."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+bootloader_chain_builder() {
+    print_header
+    echo "=== Bootloader Chain Builder ==="
+    echo
+    echo "Create multi-stage bootloader configurations:"
+    echo "  - Build bootloader chains (Stage1 -> Stage2 -> Kernel)"
+    echo "  - Configure load addresses and entry points"
+    echo "  - Generate boot scripts"
+    echo "  - Create combined bootloader images"
+    echo
+
+    local chain_dir="${SESSION_DIR}/bootloader_chain_$(date +%s)"
+    mkdir -p "$chain_dir"
+
+    log_message "INFO" "Starting bootloader chain builder: $chain_dir"
+
+    while true; do
+        print_header
+        echo "=== Bootloader Chain Builder ==="
+        echo
+        echo "Chain directory: $chain_dir"
+        echo
+        echo "  1) Define Stage 1 Bootloader (Primary)"
+        echo "  2) Define Stage 2 Bootloader (Secondary)"
+        echo "  3) Define Kernel/Firmware"
+        echo "  4) Set Load Addresses & Entry Points"
+        echo "  5) Generate U-Boot Script"
+        echo "  6) Create Combined Image"
+        echo "  7) View Current Configuration"
+        echo "  8) Export Configuration"
+        echo "  b) Back"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1)
+                echo
+                echo "--- Define Stage 1 Bootloader ---"
+                read -r -p "Enter path to Stage 1 bootloader: " stage1_file
+
+                if [ ! -f "$stage1_file" ]; then
+                    echo "ERROR: File not found: $stage1_file"
+                else
+                    cp "$stage1_file" "$chain_dir/stage1.bin"
+                    local stage1_size=$(stat -c%s "$chain_dir/stage1.bin" 2>/dev/null || stat -f%z "$chain_dir/stage1.bin" 2>/dev/null)
+                    echo "stage1_file=$stage1_file" > "$chain_dir/config.txt"
+                    echo "stage1_size=$stage1_size" >> "$chain_dir/config.txt"
+                    echo "SUCCESS: Stage 1 configured ($stage1_size bytes)"
+                    log_message "INFO" "Stage 1 bootloader set: $stage1_file"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            2)
+                echo
+                echo "--- Define Stage 2 Bootloader ---"
+                read -r -p "Enter path to Stage 2 bootloader (U-Boot, etc.): " stage2_file
+
+                if [ ! -f "$stage2_file" ]; then
+                    echo "ERROR: File not found: $stage2_file"
+                else
+                    cp "$stage2_file" "$chain_dir/stage2.bin"
+                    local stage2_size=$(stat -c%s "$chain_dir/stage2.bin" 2>/dev/null || stat -f%z "$chain_dir/stage2.bin" 2>/dev/null)
+                    echo "stage2_file=$stage2_file" >> "$chain_dir/config.txt"
+                    echo "stage2_size=$stage2_size" >> "$chain_dir/config.txt"
+                    echo "SUCCESS: Stage 2 configured ($stage2_size bytes)"
+                    log_message "INFO" "Stage 2 bootloader set: $stage2_file"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            3)
+                echo
+                echo "--- Define Kernel/Firmware ---"
+                read -r -p "Enter path to kernel/firmware: " kernel_file
+
+                if [ ! -f "$kernel_file" ]; then
+                    echo "ERROR: File not found: $kernel_file"
+                else
+                    cp "$kernel_file" "$chain_dir/kernel.bin"
+                    local kernel_size=$(stat -c%s "$chain_dir/kernel.bin" 2>/dev/null || stat -f%z "$chain_dir/kernel.bin" 2>/dev/null)
+                    echo "kernel_file=$kernel_file" >> "$chain_dir/config.txt"
+                    echo "kernel_size=$kernel_size" >> "$chain_dir/config.txt"
+                    echo "SUCCESS: Kernel configured ($kernel_size bytes)"
+                    log_message "INFO" "Kernel set: $kernel_file"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            4)
+                echo
+                echo "--- Set Load Addresses & Entry Points ---"
+                echo "Note: Addresses should be in hex format (e.g., 0x80000000)"
+                echo
+                read -r -p "Stage 1 load address (hex): " stage1_load
+                read -r -p "Stage 2 load address (hex): " stage2_load
+                read -r -p "Kernel load address (hex): " kernel_load
+                read -r -p "Kernel entry point (hex): " kernel_entry
+
+                echo "stage1_load_addr=$stage1_load" >> "$chain_dir/config.txt"
+                echo "stage2_load_addr=$stage2_load" >> "$chain_dir/config.txt"
+                echo "kernel_load_addr=$kernel_load" >> "$chain_dir/config.txt"
+                echo "kernel_entry_point=$kernel_entry" >> "$chain_dir/config.txt"
+
+                echo "SUCCESS: Addresses configured"
+                log_message "INFO" "Bootloader addresses configured"
+                read -r -p "Press Enter to continue..."
+                ;;
+            5)
+                echo
+                echo "--- Generate U-Boot Script ---"
+
+                if [ ! -f "$chain_dir/config.txt" ]; then
+                    echo "ERROR: No configuration found. Define stages first."
+                    read -r -p "Press Enter to continue..."
+                    continue
+                fi
+
+                # Source the config
+                source "$chain_dir/config.txt" 2>/dev/null || true
+
+                local script_file="$chain_dir/boot.scr.txt"
+
+                cat > "$script_file" <<EOF
+# Auto-generated U-Boot boot script
+# Generated by Cisco Recovery Tool - Bootloader Chain Builder
+# $(date)
+
+echo "=== Multi-Stage Boot Sequence ==="
+
+# Stage 1: Load initial bootloader
+echo "Loading Stage 1 Bootloader..."
+# Assuming Stage 1 is already in place (ROM/Flash)
+
+# Stage 2: Load U-Boot or secondary bootloader
+echo "Loading Stage 2 Bootloader..."
+EOF
+
+                if [ -n "$stage2_load_addr" ]; then
+                    echo "fatload mmc 0:1 $stage2_load_addr stage2.bin" >> "$script_file"
+                    echo "go $stage2_load_addr" >> "$script_file"
+                fi
+
+                cat >> "$script_file" <<EOF
+
+# Stage 3: Load kernel
+echo "Loading Kernel..."
+EOF
+
+                if [ -n "$kernel_load_addr" ] && [ -n "$kernel_entry_point" ]; then
+                    echo "fatload mmc 0:1 $kernel_load_addr kernel.bin" >> "$script_file"
+                    echo "bootm $kernel_entry_point" >> "$script_file"
+                fi
+
+                echo "" >> "$script_file"
+                echo "echo \"Boot sequence complete\"" >> "$script_file"
+
+                echo "SUCCESS: Boot script generated at $script_file"
+                echo
+                echo "Script contents:"
+                cat "$script_file"
+                echo
+
+                # Compile script if mkimage is available
+                if command -v mkimage &> /dev/null; then
+                    echo "Compiling U-Boot script..."
+                    mkimage -A arm -T script -C none -n "Boot Script" -d "$script_file" "$chain_dir/boot.scr" 2>&1
+                    if [ $? -eq 0 ]; then
+                        echo "SUCCESS: Compiled script: $chain_dir/boot.scr"
+                    fi
+                else
+                    echo "NOTE: mkimage not available - script not compiled"
+                    echo "Install u-boot-tools to compile the script"
+                fi
+
+                log_message "INFO" "Generated boot script: $script_file"
+                read -r -p "Press Enter to continue..."
+                ;;
+            6)
+                echo
+                echo "--- Create Combined Image ---"
+
+                if [ ! -f "$chain_dir/stage1.bin" ]; then
+                    echo "ERROR: Stage 1 not defined"
+                    read -r -p "Press Enter to continue..."
+                    continue
+                fi
+
+                local combined_file="$chain_dir/combined_bootloader.bin"
+
+                echo "Creating combined bootloader image..."
+
+                # Start with stage1
+                cat "$chain_dir/stage1.bin" > "$combined_file"
+
+                # Pad to 64KB boundary if stage2 exists
+                if [ -f "$chain_dir/stage2.bin" ]; then
+                    local current_size=$(stat -c%s "$combined_file" 2>/dev/null || stat -f%z "$combined_file" 2>/dev/null)
+                    local pad_to=65536  # 64KB
+                    local pad_bytes=$((pad_to - current_size))
+
+                    if [ $pad_bytes -gt 0 ]; then
+                        echo "Padding stage 1 to ${pad_to} bytes..."
+                        dd if=/dev/zero bs=1 count=$pad_bytes >> "$combined_file" 2>/dev/null
+                    fi
+
+                    # Append stage2
+                    echo "Appending stage 2..."
+                    cat "$chain_dir/stage2.bin" >> "$combined_file"
+                fi
+
+                # Pad to 1MB boundary if kernel exists
+                if [ -f "$chain_dir/kernel.bin" ]; then
+                    local current_size=$(stat -c%s "$combined_file" 2>/dev/null || stat -f%z "$combined_file" 2>/dev/null)
+                    local pad_to=1048576  # 1MB
+                    local pad_bytes=$((pad_to - current_size))
+
+                    if [ $pad_bytes -gt 0 ]; then
+                        echo "Padding bootloaders to ${pad_to} bytes..."
+                        dd if=/dev/zero bs=1 count=$pad_bytes >> "$combined_file" 2>/dev/null
+                    fi
+
+                    # Append kernel
+                    echo "Appending kernel..."
+                    cat "$chain_dir/kernel.bin" >> "$combined_file"
+                fi
+
+                local final_size=$(stat -c%s "$combined_file" 2>/dev/null || stat -f%z "$combined_file" 2>/dev/null)
+
+                echo
+                echo "========================================="
+                echo "SUCCESS: Combined image created!"
+                echo "========================================="
+                echo "File: $combined_file"
+                echo "Size: $final_size bytes ($((final_size / 1024)) KB)"
+                echo
+                echo "This image can be flashed via JTAG or written to storage device"
+
+                log_message "INFO" "Created combined bootloader image: $combined_file ($final_size bytes)"
+                read -r -p "Press Enter to continue..."
+                ;;
+            7)
+                echo
+                echo "--- Current Configuration ---"
+                if [ -f "$chain_dir/config.txt" ]; then
+                    cat "$chain_dir/config.txt"
+                else
+                    echo "No configuration found"
+                fi
+                echo
+                echo "Files in chain directory:"
+                ls -lh "$chain_dir/" 2>/dev/null || echo "Empty"
+                echo
+                read -r -p "Press Enter to continue..."
+                ;;
+            8)
+                echo
+                echo "--- Export Configuration ---"
+                read -r -p "Enter export directory path: " export_dir
+
+                if [ ! -d "$export_dir" ]; then
+                    mkdir -p "$export_dir" 2>/dev/null
+                fi
+
+                if [ -d "$export_dir" ]; then
+                    cp -r "$chain_dir"/* "$export_dir/" 2>/dev/null
+                    echo "SUCCESS: Configuration exported to $export_dir"
+                    log_message "INFO" "Exported bootloader chain to: $export_dir"
+                else
+                    echo "ERROR: Cannot create export directory"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            b)
+                echo "Bootloader chain configuration saved in: $chain_dir"
+                return 0
+                ;;
+            *)
+                echo "Invalid option."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+menu_bootloader_devkit() {
+    while true; do
+        print_header
+        echo "--- Bootloader Development Kit ---"
+        echo
+        echo "  1) U-Boot Modifier"
+        echo "     (Patch U-Boot environment, boot commands, network settings)"
+        echo
+        echo "  2) Bootloader Chain Builder"
+        echo "     (Create multi-stage bootloader configurations)"
+        echo
+        echo "  b) Back to Main Menu"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1) bootloader_uboot_modifier ;;
+            2) bootloader_chain_builder ;;
+            b) break ;;
+            *) echo "Invalid option." && sleep 1 ;;
+        esac
+    done
+}
+
+# --- End Bootloader Development Kit ---
+
 menu_set_architecture() {
     while true; do
         print_header
@@ -2328,8 +3444,10 @@ main_menu() {
         echo "  3) JTAG Exploitation"
         echo "  4) JTAG Cable Assisted Recovery"
         echo "  5) Firmware Modification Workshop"
-        echo "  6) Memory Analysis"
-        echo "  7) Firmware Manipulation"
+        echo "  6) Advanced Firmware Analysis Suite"
+        echo "  7) Bootloader Development Kit"
+        echo "  8) Memory Analysis"
+        echo "  9) Firmware Manipulation"
         echo "  b) Exit"
         echo
         read -r -p "Choose an option: " choice
@@ -2340,8 +3458,10 @@ main_menu() {
             3) menu_jtag_exploitation ;;
             4) menu_jtag_cable_recovery ;;
             5) menu_firmware_workshop ;;
-            6) menu_memory_analysis ;;
-            7) menu_firmware_manipulation ;;
+            6) menu_firmware_analysis_suite ;;
+            7) menu_bootloader_devkit ;;
+            8) menu_memory_analysis ;;
+            9) menu_firmware_manipulation ;;
             b) break ;;
             *) echo "Invalid option. Please try again." && sleep 1 ;;
         esac

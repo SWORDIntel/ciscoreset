@@ -1,8 +1,8 @@
-# Cisco & Generic Embedded Advanced Recovery Tool v2.7
+# Cisco & Generic Embedded Advanced Recovery Tool v2.8
 
 ## Overview
 
-This script is a professional-grade, TUI-driven framework for multi-vector interaction with Cisco and other embedded devices. It combines serial console recovery, advanced JTAG exploitation, JTAG cable assisted recovery, and powerful post-exploitation analysis for hardware reverse engineering and security auditing.
+This script is a professional-grade, TUI-driven framework for multi-vector interaction with Cisco and other embedded devices. It combines serial console recovery, advanced JTAG exploitation, JTAG cable assisted recovery, firmware modification, advanced firmware analysis, and bootloader development tools for hardware reverse engineering and security auditing.
 
 ## Features
 
@@ -79,6 +79,56 @@ The ultimate toolkit for custom firmware development and modification:
     -   Flash back immediately
     -   All in one session!
 
+### Advanced Firmware Analysis Suite (NEW)
+
+Comprehensive analysis tools for firmware security research:
+
+-   **Automated Firmware Teardown:**
+    -   File type and format identification
+    -   Entropy analysis (detect encryption/compression)
+    -   String extraction and categorization (URLs, credentials, paths, versions, emails)
+    -   Function signature detection
+    -   Embedded file detection
+    -   Architecture detection
+    -   Generates organized reports in session directory
+-   **Binary Firmware Differ:**
+    -   Compare two firmware versions for changes
+    -   Byte-level differences with hex dumps
+    -   Added/removed strings analysis
+    -   Changed function detection
+    -   Modified embedded files comparison
+    -   Checksum comparison (MD5, SHA256)
+-   **Vulnerability Scanner:**
+    -   Hardcoded credentials detection
+    -   Dangerous function calls (strcpy, gets, system, etc.)
+    -   Weak cryptographic algorithms (MD5, DES, RC4, SHA1)
+    -   Private keys and certificates detection
+    -   Debug/backdoor string patterns
+    -   SQL injection pattern detection
+    -   Common CVE patterns for outdated components
+
+### Bootloader Development Kit (NEW)
+
+Professional tools for bootloader modification and development:
+
+-   **U-Boot Modifier:**
+    -   Patch environment variables
+    -   Modify boot commands (bootcmd)
+    -   Change boot delays
+    -   Update network settings (IP, serverip, netmask, gateway)
+    -   Disable signature verification (NOP injection)
+    -   Search and analyze U-Boot strings
+    -   View U-Boot header information
+    -   Creates .modified backup files
+-   **Bootloader Chain Builder:**
+    -   Build multi-stage bootloader configurations
+    -   Define Stage 1, Stage 2, and Kernel components
+    -   Configure load addresses and entry points
+    -   Generate U-Boot boot scripts
+    -   Create combined bootloader images with proper padding
+    -   Export configurations for deployment
+    -   Supports automatic script compilation with mkimage
+
 ### Reverse Engineering & Analysis Menu
 
 -   **Automated Filesystem Analysis:** A powerful feature that performs a security sweep on a `binwalk`-extracted filesystem. It automatically finds sensitive files, searches for hardcoded credentials, and analyzes executables.
@@ -147,6 +197,54 @@ For custom firmware development:
 - Exit to Firmware Workshop (option 5)
 - Patch dumped firmware
 - Return to boot interception or use JTAG flash
+
+### Advanced Firmware Analysis Workflow
+
+For comprehensive firmware security analysis:
+
+1. Navigate to "Advanced Firmware Analysis Suite" (menu option 6)
+2. **Automated Teardown:**
+   - Use "Automated Firmware Teardown" (option 1)
+   - Provide path to firmware file
+   - Review comprehensive 6-step analysis
+   - Check session directory for organized reports
+3. **Compare Firmware Versions:**
+   - Use "Binary Firmware Differ" (option 2)
+   - Provide paths to original and modified firmware
+   - Review string differences, hex diffs, and embedded file changes
+4. **Security Scanning:**
+   - Use "Vulnerability Scanner" (option 3)
+   - Scan for hardcoded credentials, weak crypto, and dangerous functions
+   - Review findings in vulnerability report directory
+
+### Bootloader Development Workflow
+
+For U-Boot modification and bootloader chain creation:
+
+1. Navigate to "Bootloader Development Kit" (menu option 7)
+2. **Modify U-Boot:**
+   - Use "U-Boot Modifier" (option 1)
+   - Provide path to U-Boot image
+   - Choose modification type:
+     - Option 2: Modify boot commands
+     - Option 3: Patch environment variables
+     - Option 5: Change network settings
+   - Save modified U-Boot (.modified file created)
+3. **Build Bootloader Chain:**
+   - Use "Bootloader Chain Builder" (option 2)
+   - Define Stage 1 bootloader (option 1)
+   - Define Stage 2 bootloader (option 2)
+   - Define Kernel/Firmware (option 3)
+   - Set load addresses and entry points (option 4)
+   - Generate U-Boot script (option 5)
+   - Create combined image (option 6)
+   - Export configuration (option 8)
+
+**Advanced: Combined Workflow:**
+- Analyze existing U-Boot with Firmware Analysis Suite
+- Modify U-Boot with U-Boot Modifier
+- Build complete boot chain with Chain Builder
+- Flash via JTAG or deploy to device
 
 ## Disclaimer
 
