@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Cisco & Generic Embedded Advanced Recovery Tool v2.9
+# Cisco & Generic Embedded Advanced Recovery Tool v3.0
 #
 # A TUI-based toolkit for automating password recovery, JTAG exploitation,
 # JTAG cable assisted recovery, firmware modification, advanced firmware analysis,
 # bootloader development, filesystem manipulation, exploit development, and live memory
 # manipulation on Cisco and other embedded devices.
+#
+# New in v3.0: Color-coded output, dependency checker, recent files tracking,
+# device address presets for ISR/ASA platforms.
 
 # Exit on error, undefined variable, or pipe failure
 set -euo pipefail
@@ -20,6 +23,31 @@ OPENOCD_SCRIPT_PATH="/usr/share/openocd/scripts" # Default path, can be overridd
 PLATFORM="auto" # 'auto', 'isr', 'asa', etc.
 JTAG_ADAPTER="auto" # 'auto', 'ftdi', 'jlink', etc.
 TARGET_ARCH="auto" # 'auto', 'arm', 'mips', etc.
+
+# Recent files tracking
+RECENT_FILES_LOG="$HOME/.config/cisco_recovery/recent_files.txt"
+MAX_RECENT_FILES=10
+
+# Color codes for output
+if [ -t 1 ]; then
+    COLOR_RESET="\033[0m"
+    COLOR_RED="\033[0;31m"
+    COLOR_GREEN="\033[0;32m"
+    COLOR_YELLOW="\033[0;33m"
+    COLOR_BLUE="\033[0;34m"
+    COLOR_MAGENTA="\033[0;35m"
+    COLOR_CYAN="\033[0;36m"
+    COLOR_BOLD="\033[1m"
+else
+    COLOR_RESET=""
+    COLOR_RED=""
+    COLOR_GREEN=""
+    COLOR_YELLOW=""
+    COLOR_BLUE=""
+    COLOR_MAGENTA=""
+    COLOR_CYAN=""
+    COLOR_BOLD=""
+fi
 
 # --- Functions ---
 
@@ -46,6 +74,407 @@ load_config() {
     else
         echo "No configuration file found at $CONFIG_FILE. Using defaults."
     fi
+}
+
+# --- Color Output Functions ---
+
+print_success() {
+    echo -e "${COLOR_GREEN}[SUCCESS]${COLOR_RESET} $1"
+}
+
+print_error() {
+    echo -e "${COLOR_RED}[ERROR]${COLOR_RESET} $1"
+}
+
+print_warning() {
+    echo -e "${COLOR_YELLOW}[WARNING]${COLOR_RESET} $1"
+}
+
+print_info() {
+    echo -e "${COLOR_BLUE}[INFO]${COLOR_RESET} $1"
+}
+
+print_critical() {
+    echo -e "${COLOR_MAGENTA}${COLOR_BOLD}[CRITICAL]${COLOR_RESET} $1"
+}
+
+# --- Dependency Checker ---
+
+check_dependencies() {
+    print_header
+    echo -e "${COLOR_CYAN}${COLOR_BOLD}=== Dependency Check ===${COLOR_RESET}"
+    echo
+
+    local missing_critical=0
+    local missing_optional=0
+
+    # Critical dependencies (core functionality)
+    local critical_deps=("bash" "stty" "logger" "find" "grep" "awk" "sed" "cat")
+    echo -e "${COLOR_BOLD}Critical Dependencies:${COLOR_RESET}"
+    for dep in "${critical_deps[@]}"; do
+        if command -v "$dep" &> /dev/null; then
+            echo -e "  ${COLOR_GREEN}✓${COLOR_RESET} $dep"
+        else
+            echo -e "  ${COLOR_RED}✗${COLOR_RESET} $dep ${COLOR_RED}(MISSING)${COLOR_RESET}"
+            missing_critical=$((missing_critical + 1))
+        fi
+    done
+
+    echo
+    echo -e "${COLOR_BOLD}JTAG Dependencies:${COLOR_RESET}"
+    local jtag_deps=("openocd" "telnet")
+    for dep in "${jtag_deps[@]}"; do
+        if command -v "$dep" &> /dev/null; then
+            echo -e "  ${COLOR_GREEN}✓${COLOR_RESET} $dep"
+        else
+            echo -e "  ${COLOR_YELLOW}○${COLOR_RESET} $dep ${COLOR_YELLOW}(optional - needed for JTAG features)${COLOR_RESET}"
+            missing_optional=$((missing_optional + 1))
+        fi
+    done
+
+    echo
+    echo -e "${COLOR_BOLD}Firmware Analysis Dependencies:${COLOR_RESET}"
+    local analysis_deps=("binwalk" "strings" "xxd" "dd" "file" "hexdump")
+    for dep in "${analysis_deps[@]}"; do
+        if command -v "$dep" &> /dev/null; then
+            echo -e "  ${COLOR_GREEN}✓${COLOR_RESET} $dep"
+        else
+            echo -e "  ${COLOR_YELLOW}○${COLOR_RESET} $dep ${COLOR_YELLOW}(optional - needed for firmware analysis)${COLOR_RESET}"
+            missing_optional=$((missing_optional + 1))
+        fi
+    done
+
+    echo
+    echo -e "${COLOR_BOLD}Filesystem Tools:${COLOR_RESET}"
+    local fs_deps=("mksquashfs" "unsquashfs" "mkfs.jffs2")
+    for dep in "${fs_deps[@]}"; do
+        if command -v "$dep" &> /dev/null; then
+            echo -e "  ${COLOR_GREEN}✓${COLOR_RESET} $dep"
+        else
+            echo -e "  ${COLOR_YELLOW}○${COLOR_RESET} $dep ${COLOR_YELLOW}(optional - install squashfs-tools, mtd-utils)${COLOR_RESET}"
+            missing_optional=$((missing_optional + 1))
+        fi
+    done
+
+    echo
+    echo -e "${COLOR_BOLD}Exploit Development Tools:${COLOR_RESET}"
+    local exploit_deps=("ROPgadget" "ropgadget" "msfvenom" "objdump" "readelf" "checksec")
+    local found_rop=0
+    for dep in "ROPgadget" "ropgadget"; do
+        if command -v "$dep" &> /dev/null; then
+            echo -e "  ${COLOR_GREEN}✓${COLOR_RESET} $dep"
+            found_rop=1
+            break
+        fi
+    done
+    if [ $found_rop -eq 0 ]; then
+        echo -e "  ${COLOR_YELLOW}○${COLOR_RESET} ROPgadget ${COLOR_YELLOW}(optional - pip install ROPgadget)${COLOR_RESET}"
+        missing_optional=$((missing_optional + 1))
+    fi
+
+    for dep in "msfvenom" "objdump" "readelf" "checksec"; do
+        if command -v "$dep" &> /dev/null; then
+            echo -e "  ${COLOR_GREEN}✓${COLOR_RESET} $dep"
+        else
+            echo -e "  ${COLOR_YELLOW}○${COLOR_RESET} $dep ${COLOR_YELLOW}(optional)${COLOR_RESET}"
+            missing_optional=$((missing_optional + 1))
+        fi
+    done
+
+    echo
+    echo "========================================="
+    if [ $missing_critical -gt 0 ]; then
+        print_error "Missing $missing_critical critical dependencies!"
+        echo -e "${COLOR_RED}Some core features will not work.${COLOR_RESET}"
+        echo
+        read -r -p "Continue anyway? (yes/no): " continue_choice
+        if [ "$continue_choice" != "yes" ]; then
+            exit 1
+        fi
+    else
+        print_success "All critical dependencies found!"
+    fi
+
+    if [ $missing_optional -gt 0 ]; then
+        print_warning "Missing $missing_optional optional dependencies"
+        echo -e "${COLOR_YELLOW}Some features will be unavailable.${COLOR_RESET}"
+    else
+        print_success "All optional dependencies found!"
+    fi
+
+    echo
+    read -r -p "Press Enter to continue..."
+}
+
+# --- Recent Files Tracking ---
+
+add_recent_file() {
+    local file_path="$1"
+    local file_type="$2"  # firmware, binary, filesystem, etc.
+
+    # Create directory if it doesn't exist
+    mkdir -p "$(dirname "$RECENT_FILES_LOG")"
+
+    # Add entry with timestamp
+    echo "$(date +%s)|$file_type|$file_path" >> "$RECENT_FILES_LOG"
+
+    # Keep only last N entries
+    tail -n "$MAX_RECENT_FILES" "$RECENT_FILES_LOG" > "${RECENT_FILES_LOG}.tmp"
+    mv "${RECENT_FILES_LOG}.tmp" "$RECENT_FILES_LOG"
+}
+
+show_recent_files() {
+    print_header
+    echo "=== Recent Files ==="
+    echo
+
+    if [ ! -f "$RECENT_FILES_LOG" ] || [ ! -s "$RECENT_FILES_LOG" ]; then
+        print_info "No recent files found."
+        echo
+        read -r -p "Press Enter to continue..."
+        return 0
+    fi
+
+    echo "Recent files (most recent first):"
+    echo
+
+    local i=1
+    local -a files=()
+    local -a types=()
+
+    # Read in reverse order (most recent first)
+    while IFS='|' read -r timestamp file_type file_path; do
+        if [ -f "$file_path" ]; then
+            local time_str=$(date -d "@$timestamp" "+%Y-%m-%d %H:%M:%S" 2>/dev/null || date -r "$timestamp" "+%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "Unknown")
+            echo -e "  ${COLOR_CYAN}$i)${COLOR_RESET} [$file_type] $file_path"
+            echo "      ${COLOR_BLUE}→${COLOR_RESET} $time_str"
+            files+=("$file_path")
+            types+=("$file_type")
+            i=$((i + 1))
+        fi
+    done < <(tac "$RECENT_FILES_LOG")
+
+    if [ ${#files[@]} -eq 0 ]; then
+        print_warning "No valid recent files found (files may have been deleted)."
+        echo
+        read -r -p "Press Enter to continue..."
+        return 0
+    fi
+
+    echo
+    echo "  b) Back to Main Menu"
+    echo
+    read -r -p "Select file to work with (or 'b' to go back): " choice
+
+    if [ "$choice" = "b" ]; then
+        return 0
+    fi
+
+    if [ "$choice" -ge 1 ] && [ "$choice" -le "${#files[@]}" ]; then
+        local selected_file="${files[$((choice - 1))]}"
+        local selected_type="${types[$((choice - 1))]}"
+
+        echo
+        print_info "Selected: $selected_file"
+        echo "Type: $selected_type"
+        echo
+        echo "What would you like to do?"
+        echo "  1) Analyze with Firmware Analysis Suite"
+        echo "  2) Extract Filesystem"
+        echo "  3) Find ROP Gadgets"
+        echo "  4) Scan for Vulnerabilities"
+        echo "  5) Open in Firmware Workshop"
+        echo "  b) Back"
+        echo
+        read -r -p "Choose action: " action_choice
+
+        case "$action_choice" in
+            1)
+                firmware_automated_teardown
+                ;;
+            2)
+                firmware_fs_extract
+                ;;
+            3)
+                exploit_rop_gadget_finder
+                ;;
+            4)
+                if [ "$selected_type" = "firmware" ]; then
+                    firmware_vulnerability_scan
+                else
+                    exploit_buffer_overflow_detector
+                fi
+                ;;
+            5)
+                menu_firmware_workshop
+                ;;
+        esac
+    else
+        print_error "Invalid selection"
+        sleep 1
+    fi
+}
+
+# --- Common Address Presets ---
+
+show_address_presets() {
+    print_header
+    echo "=== Common Device Address Presets ==="
+    echo
+    echo "Select your device platform:"
+    echo
+    echo -e "${COLOR_CYAN}Cisco ISR Series:${COLOR_RESET}"
+    echo "  1) ISR 4000 Series (ARM)"
+    echo "  2) ISR 1000 Series (ARM)"
+    echo "  3) ISR 900 Series (ARM)"
+    echo
+    echo -e "${COLOR_CYAN}Cisco ASA Series:${COLOR_RESET}"
+    echo "  4) ASA 5500-X (Intel x86)"
+    echo "  5) ASA 5500 Classic (Intel x86)"
+    echo
+    echo -e "${COLOR_CYAN}Other Platforms:${COLOR_RESET}"
+    echo "  6) Generic ARM Device"
+    echo "  7) Generic MIPS Device"
+    echo "  8) Custom (Manual Entry)"
+    echo
+    echo "  b) Back to Main Menu"
+    echo
+    read -r -p "Choose platform: " platform_choice
+
+    local nvram_addr=""
+    local nvram_size=""
+    local flash_addr=""
+    local flash_size=""
+    local ram_addr=""
+    local bootloader_addr=""
+
+    case "$platform_choice" in
+        1)
+            print_info "ISR 4000 Series Selected"
+            PLATFORM="isr"
+            TARGET_ARCH="arm"
+            nvram_addr="0x10000000"
+            nvram_size="0x20000"
+            flash_addr="0x60000000"
+            flash_size="0x4000000"
+            ram_addr="0x80000000"
+            bootloader_addr="0x60000000"
+            ;;
+        2)
+            print_info "ISR 1000 Series Selected"
+            PLATFORM="isr"
+            TARGET_ARCH="arm"
+            nvram_addr="0x08000000"
+            nvram_size="0x10000"
+            flash_addr="0x40000000"
+            flash_size="0x2000000"
+            ram_addr="0x00000000"
+            bootloader_addr="0x40000000"
+            ;;
+        3)
+            print_info "ISR 900 Series Selected"
+            PLATFORM="isr"
+            TARGET_ARCH="arm"
+            nvram_addr="0x10000000"
+            nvram_size="0x20000"
+            flash_addr="0x44000000"
+            flash_size="0x2000000"
+            ram_addr="0x00000000"
+            bootloader_addr="0x44000000"
+            ;;
+        4)
+            print_info "ASA 5500-X Selected"
+            PLATFORM="asa"
+            TARGET_ARCH="x86"
+            nvram_addr="0xF0000000"
+            nvram_size="0x10000"
+            flash_addr="0xFFC00000"
+            flash_size="0x400000"
+            ram_addr="0x00000000"
+            bootloader_addr="0xFFFE0000"
+            ;;
+        5)
+            print_info "ASA 5500 Classic Selected"
+            PLATFORM="asa"
+            TARGET_ARCH="x86"
+            nvram_addr="0xF0000000"
+            nvram_size="0x8000"
+            flash_addr="0xFFF00000"
+            flash_size="0x100000"
+            ram_addr="0x00000000"
+            bootloader_addr="0xFFFF0000"
+            ;;
+        6)
+            print_info "Generic ARM Device Selected"
+            PLATFORM="auto"
+            TARGET_ARCH="arm"
+            nvram_addr="0x10000000"
+            nvram_size="0x10000"
+            flash_addr="0x08000000"
+            flash_size="0x1000000"
+            ram_addr="0x20000000"
+            bootloader_addr="0x08000000"
+            ;;
+        7)
+            print_info "Generic MIPS Device Selected"
+            PLATFORM="auto"
+            TARGET_ARCH="mips"
+            nvram_addr="0x1FC00000"
+            nvram_size="0x10000"
+            flash_addr="0x1E000000"
+            flash_size="0x1000000"
+            ram_addr="0x80000000"
+            bootloader_addr="0x1FC00000"
+            ;;
+        8)
+            print_info "Custom Address Configuration"
+            echo
+            read -r -p "Enter NVRAM address (hex, e.g., 0x10000000): " nvram_addr
+            read -r -p "Enter NVRAM size (hex, e.g., 0x20000): " nvram_size
+            read -r -p "Enter Flash address (hex): " flash_addr
+            read -r -p "Enter Flash size (hex): " flash_size
+            read -r -p "Enter RAM address (hex): " ram_addr
+            read -r -p "Enter Bootloader address (hex): " bootloader_addr
+            ;;
+        b)
+            return 0
+            ;;
+        *)
+            print_error "Invalid selection"
+            sleep 1
+            return 1
+            ;;
+    esac
+
+    echo
+    print_success "Address Preset Loaded!"
+    echo
+    echo -e "${COLOR_BOLD}Memory Map:${COLOR_RESET}"
+    echo -e "  ${COLOR_GREEN}NVRAM:${COLOR_RESET}      $nvram_addr (size: $nvram_size)"
+    echo -e "  ${COLOR_GREEN}Flash:${COLOR_RESET}      $flash_addr (size: $flash_size)"
+    echo -e "  ${COLOR_GREEN}RAM:${COLOR_RESET}        $ram_addr"
+    echo -e "  ${COLOR_GREEN}Bootloader:${COLOR_RESET} $bootloader_addr"
+    echo
+    echo -e "${COLOR_BOLD}Configuration:${COLOR_RESET}"
+    echo -e "  Platform: ${COLOR_CYAN}$PLATFORM${COLOR_RESET}"
+    echo -e "  Architecture: ${COLOR_CYAN}$TARGET_ARCH${COLOR_RESET}"
+    echo
+    echo "These addresses are now available for:"
+    echo "  - Memory Poke/Peek operations"
+    echo "  - Firmware dumping"
+    echo "  - NVRAM extraction"
+    echo "  - Bootloader recovery"
+    echo
+    echo "Would you like to save this as a configuration profile?"
+    read -r -p "(yes/no): " save_choice
+
+    if [ "$save_choice" = "yes" ]; then
+        read -r -p "Enter profile name: " profile_name
+        config_save_profile
+    fi
+
+    echo
+    read -r -p "Press Enter to continue..."
 }
 
 # --- Utility Functions ---
@@ -5118,20 +5547,32 @@ menu_platform_jtag_config() {
 main_menu() {
     while true; do
         print_header
-        echo "--- Main Menu ---"
+        echo -e "${COLOR_CYAN}${COLOR_BOLD}--- Main Menu ---${COLOR_RESET}"
+        echo
+        echo -e "${COLOR_BOLD}Core Features:${COLOR_RESET}"
         echo "  1) Platform and JTAG Configuration"
         echo "  2) Cisco Password Recovery"
         echo "  3) JTAG Exploitation"
         echo "  4) JTAG Cable Assisted Recovery"
+        echo
+        echo -e "${COLOR_BOLD}Firmware Tools:${COLOR_RESET}"
         echo "  5) Firmware Modification Workshop"
         echo "  6) Advanced Firmware Analysis Suite"
         echo "  7) Bootloader Development Kit"
         echo "  8) Firmware Filesystem Tools"
+        echo
+        echo -e "${COLOR_BOLD}Exploitation & Analysis:${COLOR_RESET}"
         echo "  9) Automated Exploit Development Tools"
-        echo " 10) Configuration Management System"
-        echo " 11) Live Memory Manipulation During Boot"
-        echo " 12) Memory Analysis"
-        echo " 13) Firmware Manipulation"
+        echo " 10) Live Memory Manipulation During Boot"
+        echo " 11) Memory Analysis"
+        echo " 12) Firmware Manipulation"
+        echo
+        echo -e "${COLOR_BOLD}Utilities:${COLOR_RESET}"
+        echo " 13) Configuration Management System"
+        echo -e " 14) ${COLOR_GREEN}Recent Files${COLOR_RESET}"
+        echo -e " 15) ${COLOR_GREEN}Device Address Presets${COLOR_RESET}"
+        echo -e " 16) ${COLOR_YELLOW}Check Dependencies${COLOR_RESET}"
+        echo
         echo "  b) Exit"
         echo
         read -r -p "Choose an option: " choice
@@ -5146,10 +5587,13 @@ main_menu() {
             7) menu_bootloader_devkit ;;
             8) menu_firmware_filesystem_tools ;;
             9) menu_exploit_dev_tools ;;
-            10) menu_config_management ;;
-            11) menu_live_memory_manipulation ;;
-            12) menu_memory_analysis ;;
-            13) menu_firmware_manipulation ;;
+            10) menu_live_memory_manipulation ;;
+            11) menu_memory_analysis ;;
+            12) menu_firmware_manipulation ;;
+            13) menu_config_management ;;
+            14) show_recent_files ;;
+            15) show_address_presets ;;
+            16) check_dependencies ;;
             b) break ;;
             *) echo "Invalid option. Please try again." && sleep 1 ;;
         esac
@@ -5169,6 +5613,10 @@ main() {
     log_message "INFO" "Session directory created at $SESSION_DIR."
 
     load_config
+
+    # Check dependencies on first run
+    check_dependencies
+
     main_menu
 }
 

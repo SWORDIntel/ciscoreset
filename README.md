@@ -1,8 +1,15 @@
-# Cisco & Generic Embedded Advanced Recovery Tool v2.9
+# Cisco & Generic Embedded Advanced Recovery Tool v3.0
 
 ## Overview
 
 This script is a professional-grade, TUI-driven framework for multi-vector interaction with Cisco and other embedded devices. It combines serial console recovery, advanced JTAG exploitation, JTAG cable assisted recovery, firmware modification, advanced firmware analysis, bootloader development, filesystem manipulation, automated exploit development, configuration management, and live memory manipulation for comprehensive hardware reverse engineering and security auditing.
+
+### New in v3.0 - Quality of Life Improvements
+
+-   **Color-Coded Output:** Beautiful, easy-to-read interface with color-coded SUCCESS (green), ERROR (red), WARNING (yellow), and INFO (blue) messages throughout the entire tool
+-   **Startup Dependency Checker:** Automatic validation of all required and optional tools on launch with clear installation hints and package names
+-   **Recent Files Tracking:** Quick access to the last 10 firmware files, binaries, and filesystems you've worked with - no more typing paths repeatedly!
+-   **Device Address Presets:** Pre-configured memory maps for ISR 4000/1000/900, ASA 5500-X/Classic, and generic ARM/MIPS devices - eliminates guesswork for memory operations
 
 ## Features
 
