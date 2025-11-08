@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cisco & Generic Embedded Advanced Recovery Tool v2.5
+# Cisco & Generic Embedded Advanced Recovery Tool v2.6
 #
 # A TUI-based toolkit for automating password recovery, JTAG exploitation,
 # JTAG cable assisted recovery, and firmware analysis on Cisco and other embedded devices.
@@ -1241,6 +1241,536 @@ jtag_recovery_wizard() {
     read -r -p "Press Enter to return to menu..."
 }
 
+jtag_auto_boot_interrupt() {
+    print_header
+    echo "--- Automated Boot Interception ---"
+    echo
+    echo "This module will monitor the device and automatically interrupt"
+    echo "the boot process, then guide you through recovery options."
+    echo
+
+    if ! command -v openocd &> /dev/null; then
+        log_message "ERROR" "'openocd' not found."
+        echo "ERROR: 'openocd' is not installed."
+        sleep 3
+        return
+    fi
+
+    if [ "$JTAG_ADAPTER" == "auto" ] || [ "$TARGET_ARCH" == "auto" ]; then
+        log_message "ERROR" "JTAG adapter or target architecture not set."
+        echo "ERROR: Please configure JTAG adapter and target architecture first."
+        sleep 3
+        return
+    fi
+
+    echo "Configuration:"
+    echo "  Platform: $PLATFORM"
+    echo "  JTAG Adapter: $JTAG_ADAPTER"
+    echo "  Architecture: $TARGET_ARCH"
+    echo
+    echo "This will:"
+    echo "  1. Start OpenOCD and connect to the device"
+    echo "  2. Wait for boot activity (or power cycle if needed)"
+    echo "  3. Automatically halt the CPU early in boot"
+    echo "  4. Present recovery options"
+    echo
+    read -r -p "Continue? (y/n): " continue_choice
+
+    if [[ "$continue_choice" != "y" ]]; then
+        echo "Operation cancelled."
+        sleep 1
+        return
+    fi
+
+    local ocd_interface_cfg="${OPENOCD_SCRIPT_PATH}/interface/${JTAG_ADAPTER}.cfg"
+    local ocd_target_cfg="${OPENOCD_SCRIPT_PATH}/target/swj-dp.cfg"
+
+    # Create temporary OpenOCD script for boot interception
+    local ocd_script="${SESSION_DIR}/boot_intercept.cfg"
+    cat > "$ocd_script" <<- 'OCDEOF'
+# Boot interception script
+proc boot_intercept {} {
+    echo "=== Boot Interception Active ==="
+    echo "Waiting for device to start booting..."
+    echo "Power cycle the device now if it's not already running."
+    echo ""
+
+    # Try to connect and halt
+    if {[catch {init} err]} {
+        echo "Init failed: $err"
+        echo "Retrying in 2 seconds..."
+        after 2000
+        if {[catch {init} err2]} {
+            echo "Second init attempt failed: $err2"
+            return
+        }
+    }
+
+    echo "Connected to device via JTAG."
+    echo "Waiting 3 seconds for boot to start..."
+    after 3000
+
+    # Attempt to halt the CPU
+    echo "Attempting to halt CPU..."
+    if {[catch {halt} err]} {
+        echo "First halt attempt failed: $err"
+        echo "Retrying..."
+        after 1000
+        if {[catch {halt 1000} err2]} {
+            echo "Second halt attempt failed: $err2"
+        } else {
+            echo "*** CPU HALTED ***"
+        }
+    } else {
+        echo "*** CPU HALTED ***"
+    }
+
+    # Display CPU state
+    echo ""
+    echo "=== Current CPU State ==="
+    if {[catch {reg} err]} {
+        echo "Could not read registers: $err"
+    }
+
+    echo ""
+    echo "=== Boot Intercepted Successfully ==="
+    echo "The device is now halted and ready for recovery operations."
+    echo "OpenOCD telnet server is running on port 4444"
+    echo "Use 'telnet localhost 4444' to access the console."
+    echo ""
+}
+
+# Run the interception
+boot_intercept
+OCDEOF
+
+    echo
+    echo "Starting OpenOCD with boot interception..."
+    echo "==================================================="
+    log_message "INFO" "Starting automated boot interception"
+
+    # Start OpenOCD in the background
+    local openocd_log="${SESSION_DIR}/openocd_boot_intercept.log"
+    openocd -f "$ocd_interface_cfg" -f "$ocd_target_cfg" -f "$ocd_script" > "$openocd_log" 2>&1 &
+    local openocd_pid=$!
+
+    echo "OpenOCD started (PID: $openocd_pid)"
+    echo "Monitoring boot process..."
+    echo
+    echo "*** POWER CYCLE THE DEVICE NOW ***"
+    echo
+    echo "Waiting for boot interception (timeout: 30 seconds)..."
+
+    # Wait and monitor the log
+    local timeout=30
+    local elapsed=0
+    local halted=0
+
+    while [ $elapsed -lt $timeout ]; do
+        if grep -q "CPU HALTED" "$openocd_log" 2>/dev/null; then
+            halted=1
+            break
+        fi
+
+        if ! kill -0 $openocd_pid 2>/dev/null; then
+            echo "ERROR: OpenOCD process died unexpectedly."
+            log_message "ERROR" "OpenOCD process terminated during boot interception"
+            cat "$openocd_log"
+            read -r -p "Press Enter to continue..."
+            return
+        fi
+
+        sleep 1
+        elapsed=$((elapsed + 1))
+
+        # Show progress
+        if [ $((elapsed % 5)) -eq 0 ]; then
+            echo "Still waiting... ($elapsed seconds elapsed)"
+        fi
+    done
+
+    if [ $halted -eq 1 ]; then
+        echo
+        echo "==================================================="
+        echo "*** BOOT SUCCESSFULLY INTERCEPTED ***"
+        echo "==================================================="
+        echo
+        log_message "INFO" "Boot interception successful"
+
+        # Show the boot intercept menu
+        jtag_post_interrupt_menu "$openocd_pid"
+    else
+        echo
+        echo "==================================================="
+        echo "WARNING: Boot interception timed out."
+        echo "The device may not have booted or JTAG connection failed."
+        echo "==================================================="
+        log_message "WARN" "Boot interception timeout"
+        echo
+        echo "OpenOCD is still running. Check the log:"
+        tail -20 "$openocd_log"
+        echo
+        read -r -p "Kill OpenOCD? (y/n): " kill_choice
+        if [[ "$kill_choice" == "y" ]]; then
+            kill $openocd_pid 2>/dev/null
+            echo "OpenOCD terminated."
+        fi
+    fi
+
+    read -r -p "Press Enter to continue..."
+}
+
+jtag_post_interrupt_menu() {
+    local openocd_pid="$1"
+
+    while true; do
+        print_header
+        echo "--- Post-Interrupt Recovery Menu ---"
+        echo
+        echo "  Device Status: HALTED via JTAG"
+        echo "  OpenOCD PID: $openocd_pid (telnet port 4444)"
+        echo "  Platform: $PLATFORM"
+        echo
+        echo "=== Recovery Options ==="
+        echo "  1) Password Reset (NVRAM Method)"
+        echo "  2) Password Reset (Config Register Method)"
+        echo "  3) Dump Firmware/Flash"
+        echo "  4) Dump RAM"
+        echo "  5) Extract NVRAM Configuration"
+        echo "  6) Manual OpenOCD Console (telnet)"
+        echo "  7) Examine Registers & Memory"
+        echo "  8) Resume Boot (Exit Recovery)"
+        echo "  9) Power Off Device (Keep Halted)"
+        echo "  b) Kill OpenOCD & Return"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1)
+                # Password reset via NVRAM
+                print_header
+                echo "--- Password Reset: NVRAM Method ---"
+                echo
+                echo "This will dump NVRAM and search for credentials."
+                echo
+                read -r -p "Enter NVRAM base address (hex, e.g., 0x1e000000): " nvram_addr
+                read -r -p "Enter NVRAM size (bytes, e.g., 65536): " nvram_size
+                local nvram_file="${SESSION_DIR}/nvram_boot_intercept.bin"
+
+                echo
+                echo "Dumping NVRAM via telnet to OpenOCD..."
+
+                # Use telnet to send commands to OpenOCD
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    echo "dump_image \"$nvram_file\" $nvram_addr $nvram_size"
+                    sleep 2
+                    echo "exit"
+                } | telnet localhost 4444 2>&1 | tee "${SESSION_DIR}/nvram_dump_output.log"
+
+                if [ -f "$nvram_file" ]; then
+                    echo
+                    echo "SUCCESS: NVRAM dumped to $nvram_file"
+                    echo
+                    echo "Searching for credentials..."
+                    echo "------- Potential Credentials -------"
+                    strings "$nvram_file" | grep -iE 'password|secret|user|admin|enable|cisco' | head -30
+                    echo "-------------------------------------"
+                    log_message "INFO" "NVRAM dump successful via boot intercept"
+                else
+                    echo "ERROR: NVRAM dump failed. Check OpenOCD output."
+                fi
+
+                read -r -p "Press Enter to continue..."
+                ;;
+            2)
+                # Password reset via config register
+                print_header
+                echo "--- Password Reset: Config Register Method ---"
+                echo
+                echo "This will modify the configuration register to bypass"
+                echo "the startup-config on next boot (confreg 0x2142)."
+                echo
+                read -r -p "Enter config register address (hex, e.g., 0x2102000): " confreg_addr
+                echo
+                echo "Common bypass values:"
+                echo "  Cisco ISR/Router: 0x2142"
+                echo "  Other: Check device documentation"
+                echo
+                read -r -p "Enter bypass value (hex, e.g., 0x2142): " bypass_value
+
+                echo
+                echo "WARNING: Writing incorrect values can brick the device!"
+                read -r -p "Type 'CONFIRM' to proceed: " confirm
+
+                if [[ "$confirm" != "CONFIRM" ]]; then
+                    echo "Operation cancelled."
+                    sleep 2
+                    continue
+                fi
+
+                echo
+                echo "Writing configuration register via OpenOCD..."
+
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    echo "mww $confreg_addr $bypass_value"
+                    sleep 1
+                    echo "mdw $confreg_addr 1"
+                    sleep 1
+                    echo "exit"
+                } | telnet localhost 4444 2>&1 | tee "${SESSION_DIR}/confreg_output.log"
+
+                echo
+                echo "Configuration register write completed."
+                echo "You can now resume boot (option 8) and the device"
+                echo "will bypass startup-config, allowing password reset."
+
+                log_message "INFO" "Config register modified via boot intercept"
+                read -r -p "Press Enter to continue..."
+                ;;
+            3)
+                # Dump firmware/flash
+                print_header
+                echo "--- Dump Firmware/Flash ---"
+                echo
+                read -r -p "Enter output file path: " flash_file
+                read -r -p "Enter flash base address (hex, e.g., 0x0): " flash_addr
+                read -r -p "Enter size to dump (bytes, e.g., 16777216): " flash_size
+
+                echo
+                echo "Dumping flash memory..."
+
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    echo "dump_image \"$flash_file\" $flash_addr $flash_size"
+                    sleep 5
+                    echo "exit"
+                } | telnet localhost 4444 2>&1 | tee "${SESSION_DIR}/flash_dump_output.log"
+
+                if [ -f "$flash_file" ]; then
+                    echo
+                    echo "SUCCESS: Flash dumped to $flash_file"
+                    echo "File size: $(du -h "$flash_file" | cut -f1)"
+                    log_message "INFO" "Flash dump successful via boot intercept: $flash_file"
+                else
+                    echo "ERROR: Flash dump failed."
+                fi
+
+                read -r -p "Press Enter to continue..."
+                ;;
+            4)
+                # Dump RAM
+                print_header
+                echo "--- Dump RAM ---"
+                echo
+                read -r -p "Enter output file path: " ram_file
+                read -r -p "Enter RAM base address (hex, e.g., 0x80000000): " ram_addr
+                read -r -p "Enter size to dump (bytes, e.g., 134217728): " ram_size
+
+                echo
+                echo "Dumping RAM..."
+
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    echo "dump_image \"$ram_file\" $ram_addr $ram_size"
+                    sleep 3
+                    echo "exit"
+                } | telnet localhost 4444 2>&1 | tee "${SESSION_DIR}/ram_dump_output.log"
+
+                if [ -f "$ram_file" ]; then
+                    echo
+                    echo "SUCCESS: RAM dumped to $ram_file"
+                    echo "File size: $(du -h "$ram_file" | cut -f1)"
+                    log_message "INFO" "RAM dump successful via boot intercept: $ram_file"
+                else
+                    echo "ERROR: RAM dump failed."
+                fi
+
+                read -r -p "Press Enter to continue..."
+                ;;
+            5)
+                # Extract NVRAM configuration
+                print_header
+                echo "--- Extract NVRAM Configuration ---"
+                echo
+                echo "This extracts the full NVRAM including startup-config."
+                echo
+                read -r -p "Enter NVRAM base address (hex, e.g., 0x1e000000): " nvram_addr
+                read -r -p "Enter NVRAM size (bytes, e.g., 131072): " nvram_size
+                local nvram_file="${SESSION_DIR}/nvram_full_config.bin"
+
+                echo
+                echo "Extracting NVRAM configuration..."
+
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    echo "dump_image \"$nvram_file\" $nvram_addr $nvram_size"
+                    sleep 2
+                    echo "exit"
+                } | telnet localhost 4444 2>&1
+
+                if [ -f "$nvram_file" ]; then
+                    echo
+                    echo "SUCCESS: NVRAM extracted to $nvram_file"
+                    echo
+                    echo "Searching for configuration data..."
+                    echo "------- Configuration Snippets -------"
+                    strings "$nvram_file" | grep -E '^(interface|ip|router|line|enable|username|hostname)' | head -50
+                    echo "--------------------------------------"
+                    echo
+                    echo "Full NVRAM saved to: $nvram_file"
+                    log_message "INFO" "NVRAM configuration extracted via boot intercept"
+                else
+                    echo "ERROR: NVRAM extraction failed."
+                fi
+
+                read -r -p "Press Enter to continue..."
+                ;;
+            6)
+                # Manual console
+                print_header
+                echo "--- Manual OpenOCD Console ---"
+                echo
+                echo "OpenOCD telnet server is running on localhost:4444"
+                echo
+                echo "Useful commands:"
+                echo "  halt              - Halt the CPU"
+                echo "  resume            - Resume execution"
+                echo "  reset halt        - Reset and halt"
+                echo "  reg               - Display registers"
+                echo "  mdw <addr> <cnt>  - Read memory (word)"
+                echo "  mww <addr> <val>  - Write memory (word)"
+                echo "  dump_image <file> <addr> <size> - Dump memory"
+                echo "  load_image <file> <addr> - Load to memory"
+                echo "  step              - Single step"
+                echo
+                echo "Connecting to telnet console..."
+                echo "Type 'exit' or Ctrl+] then 'quit' to return."
+                echo
+                read -r -p "Press Enter to connect..."
+
+                telnet localhost 4444
+
+                echo
+                echo "Disconnected from OpenOCD console."
+                read -r -p "Press Enter to continue..."
+                ;;
+            7)
+                # Examine registers & memory
+                print_header
+                echo "--- Examine Registers & Memory ---"
+                echo
+                echo "Retrieving CPU state..."
+
+                local exam_output="${SESSION_DIR}/examination_output.log"
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    echo "reg"
+                    sleep 1
+                    echo "exit"
+                } | telnet localhost 4444 2>&1 | tee "$exam_output"
+
+                echo
+                echo "=== Register Dump ==="
+                grep -A 50 "reg" "$exam_output" | head -60
+                echo "====================="
+                echo
+
+                read -r -p "Examine specific memory address? (y/n): " exam_mem
+                if [[ "$exam_mem" == "y" ]]; then
+                    read -r -p "Enter address (hex): " exam_addr
+                    read -r -p "Enter word count: " exam_count
+
+                    {
+                        sleep 1
+                        echo "mdw $exam_addr $exam_count"
+                        sleep 1
+                        echo "exit"
+                    } | telnet localhost 4444 2>&1
+                fi
+
+                echo
+                read -r -p "Press Enter to continue..."
+                ;;
+            8)
+                # Resume boot
+                print_header
+                echo "--- Resume Boot ---"
+                echo
+                echo "This will resume device execution and continue booting."
+                echo
+                read -r -p "Resume now? (y/n): " resume_choice
+
+                if [[ "$resume_choice" == "y" ]]; then
+                    echo
+                    echo "Resuming device..."
+
+                    {
+                        sleep 1
+                        echo "resume"
+                        sleep 1
+                        echo "exit"
+                    } | telnet localhost 4444 2>&1
+
+                    echo
+                    echo "Device resumed. Boot should continue."
+                    echo "Monitor the serial console for boot messages."
+                    log_message "INFO" "Device boot resumed after interception"
+
+                    read -r -p "Press Enter to continue..."
+                fi
+                ;;
+            9)
+                # Power off device
+                print_header
+                echo "--- Power Off Device ---"
+                echo
+                echo "The device will remain halted via JTAG."
+                echo "You can manually power off the device now."
+                echo
+                echo "OpenOCD will keep running. Use option 'b' to kill it."
+                read -r -p "Press Enter to continue..."
+                ;;
+            b)
+                # Kill OpenOCD and return
+                print_header
+                echo "--- Terminating OpenOCD ---"
+                echo
+                read -r -p "Kill OpenOCD and return to menu? (y/n): " kill_choice
+
+                if [[ "$kill_choice" == "y" ]]; then
+                    if kill -0 $openocd_pid 2>/dev/null; then
+                        kill $openocd_pid 2>/dev/null
+                        sleep 1
+                        echo "OpenOCD terminated (PID: $openocd_pid)"
+                        log_message "INFO" "OpenOCD terminated after boot interception session"
+                    else
+                        echo "OpenOCD process already terminated."
+                    fi
+                    break
+                fi
+                ;;
+            *)
+                echo "Invalid option."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
 menu_jtag_cable_recovery() {
     while true; do
         print_header
@@ -1251,10 +1781,11 @@ menu_jtag_cable_recovery() {
         echo "  1) Test JTAG Cable Connection"
         echo "  2) Detect JTAG TAPs & Diagnostics"
         echo "  3) Interactive OpenOCD Console"
-        echo "  4) JTAG Password Recovery"
-        echo "  5) JTAG Bootloader Recovery"
-        echo "  6) JTAG Memory Patching"
-        echo "  7) Guided Recovery Wizard"
+        echo "  4) Automated Boot Interception (NEW)"
+        echo "  5) JTAG Password Recovery"
+        echo "  6) JTAG Bootloader Recovery"
+        echo "  7) JTAG Memory Patching"
+        echo "  8) Guided Recovery Wizard"
         echo "  b) Back to Main Menu"
         echo
         read -r -p "Choose an option: " choice
@@ -1263,10 +1794,11 @@ menu_jtag_cable_recovery() {
             1) jtag_test_connection ;;
             2) jtag_detect_taps ;;
             3) jtag_interactive_console ;;
-            4) jtag_password_recovery ;;
-            5) jtag_bootloader_recovery ;;
-            6) jtag_memory_patch ;;
-            7) jtag_recovery_wizard ;;
+            4) jtag_auto_boot_interrupt ;;
+            5) jtag_password_recovery ;;
+            6) jtag_bootloader_recovery ;;
+            7) jtag_memory_patch ;;
+            8) jtag_recovery_wizard ;;
             b) break ;;
             *) echo "Invalid option." && sleep 1 ;;
         esac

@@ -1,4 +1,4 @@
-# Cisco & Generic Embedded Advanced Recovery Tool v2.5
+# Cisco & Generic Embedded Advanced Recovery Tool v2.6
 
 ## Overview
 
@@ -15,11 +15,27 @@ This script is a professional-grade, TUI-driven framework for multi-vector inter
 -   **Data Exfiltration:** Includes tools for dumping memory regions and extracting the full contents of flash memory via JTAG.
 -   **Multi-Architecture Profiles:** Provides distinct initialization profiles for ARM and MIPS targets.
 
-### JTAG Cable Assisted Recovery Menu (NEW)
+### JTAG Cable Assisted Recovery Menu
 
 -   **Connection Testing:** Verify JTAG cable connectivity and detect issues before attempting recovery operations.
 -   **TAP Detection & Diagnostics:** Automatically detect and identify JTAG TAPs in the chain with IDCODE reporting.
 -   **Interactive OpenOCD Console:** Launch an interactive OpenOCD server for manual debugging and recovery operations.
+-   **Automated Boot Interception (NEW):** Revolutionary feature that monitors device boot via JTAG and automatically interrupts it:
+    -   Waits for ISR/device to start booting
+    -   Automatically halts CPU during boot process
+    -   Presents comprehensive post-interrupt recovery menu
+    -   **Post-Interrupt Options:**
+        -   Password Reset (NVRAM extraction method)
+        -   Password Reset (Config register bypass method - confreg 0x2142)
+        -   Dump Firmware/Flash
+        -   Dump RAM
+        -   Extract NVRAM Configuration (including startup-config)
+        -   Manual OpenOCD Console (drop to telnet for advanced operations)
+        -   Examine Registers & Memory
+        -   Resume Boot (continue normal boot after modifications)
+        -   Power Off Device (keep halted)
+    -   All operations performed while device is halted at boot
+    -   Perfect for password recovery when serial console is locked
 -   **JTAG Password Recovery:** Three methods for password recovery:
     -   Extract and analyze NVRAM for credentials
     -   Patch configuration register (confreg bypass method)
@@ -59,9 +75,24 @@ This script is a professional-grade, TUI-driven framework for multi-vector inter
 ## Usage
 
 1.  Ensure all dependencies are installed.
-2.  Connect your hardware.
+2.  Connect your hardware (JTAG cable and/or serial console).
 3.  Run as root: `./cisco_recovery.sh`
 4.  Follow the TUI prompts.
+
+### Automated Boot Interception Workflow
+
+For JTAG-assisted password recovery on locked ISR devices:
+
+1. Configure Platform and JTAG adapter (menu option 1)
+2. Select "JTAG Cable Assisted Recovery" (menu option 4)
+3. Choose "Automated Boot Interception" (option 4)
+4. Power cycle the device when prompted
+5. Wait for automatic boot interruption (CPU will halt)
+6. Select recovery option from post-interrupt menu:
+   - Option 2 for config register password reset (recommended)
+   - Option 1 for NVRAM credential extraction
+   - Option 6 to drop to manual console
+7. After modifications, resume boot (option 8) or keep halted for further analysis
 
 ## Disclaimer
 
