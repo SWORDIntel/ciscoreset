@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Cisco & Generic Embedded Advanced Recovery Tool v2.3
+# Cisco & Generic Embedded Advanced Recovery Tool v2.8
 #
 # A TUI-based toolkit for automating password recovery, JTAG exploitation,
-# and firmware analysis on Cisco and other embedded devices.
+# JTAG cable assisted recovery, firmware modification, advanced firmware analysis,
+# and bootloader development on Cisco and other embedded devices.
 
 # Exit on error, undefined variable, or pipe failure
 set -euo pipefail
@@ -534,6 +535,2859 @@ menu_firmware_manipulation() {
     done
 }
 
+# --- JTAG Cable Assisted Recovery Functions ---
+
+jtag_test_connection() {
+    print_header
+    echo "--- JTAG Cable Connection Test ---"
+    echo
+
+    if ! command -v openocd &> /dev/null; then
+        log_message "ERROR" "'openocd' not found."
+        echo "ERROR: 'openocd' is not installed. Please install it to use this feature."
+        sleep 3
+        return
+    fi
+
+    if [ "$JTAG_ADAPTER" == "auto" ]; then
+        log_message "ERROR" "JTAG adapter not set."
+        echo "ERROR: Please configure the JTAG adapter first."
+        sleep 3
+        return
+    fi
+
+    local ocd_interface_cfg="${OPENOCD_SCRIPT_PATH}/interface/${JTAG_ADAPTER}.cfg"
+
+    if [ ! -f "$ocd_interface_cfg" ]; then
+        log_message "ERROR" "OpenOCD interface config not found: $ocd_interface_cfg"
+        echo "ERROR: Interface config file not found. Check OPENOCD_SCRIPT_PATH."
+        sleep 3
+        return
+    fi
+
+    echo "Testing JTAG cable connection..."
+    echo "Adapter: $JTAG_ADAPTER"
+    echo
+
+    local openocd_cmd=(
+        "openocd"
+        "-f" "$ocd_interface_cfg"
+        "-c" "adapter speed 1000"
+        "-c" "init"
+        "-c" "scan_chain"
+        "-c" "exit"
+    )
+
+    log_message "INFO" "Running JTAG connection test..."
+    log_message "CMD" "${openocd_cmd[*]}"
+
+    local test_output
+    if test_output=$("${openocd_cmd[@]}" 2>&1); then
+        log_message "INFO" "JTAG connection test output: $test_output"
+        echo "------- Connection Test Results -------"
+        echo "$test_output" | grep -E "(Info|Error|Warn|JTAG|TAP)" || echo "$test_output"
+        echo "---------------------------------------"
+
+        if echo "$test_output" | grep -q "JTAG tap:"; then
+            echo
+            echo "SUCCESS: JTAG TAP detected! Cable connection is working."
+        else
+            echo
+            echo "WARNING: No JTAG TAP detected. Check your connections."
+        fi
+    else
+        log_message "ERROR" "JTAG connection test failed: $test_output"
+        echo "ERROR: Connection test failed. Output:"
+        echo "$test_output"
+    fi
+
+    echo
+    read -r -p "Press Enter to continue..."
+}
+
+jtag_detect_taps() {
+    print_header
+    echo "--- JTAG TAP Detection & Diagnostics ---"
+    echo
+
+    if ! command -v openocd &> /dev/null; then
+        log_message "ERROR" "'openocd' not found."
+        echo "ERROR: 'openocd' is not installed."
+        sleep 3
+        return
+    fi
+
+    if [ "$JTAG_ADAPTER" == "auto" ]; then
+        log_message "ERROR" "JTAG adapter not set."
+        echo "ERROR: Please configure the JTAG adapter first."
+        sleep 3
+        return
+    fi
+
+    local ocd_interface_cfg="${OPENOCD_SCRIPT_PATH}/interface/${JTAG_ADAPTER}.cfg"
+
+    echo "Detecting JTAG TAPs in the chain..."
+    echo "This will scan for all devices on the JTAG chain."
+    echo
+
+    local openocd_cmd=(
+        "openocd"
+        "-f" "$ocd_interface_cfg"
+        "-c" "adapter speed 100"
+        "-c" "transport select jtag"
+        "-c" "jtag newtap auto0 tap -irlen 4 -expected-id 0"
+        "-c" "init"
+        "-c" "scan_chain"
+        "-c" "exit"
+    )
+
+    log_message "INFO" "Running JTAG TAP detection..."
+    log_message "CMD" "${openocd_cmd[*]}"
+
+    local tap_output
+    if tap_output=$("${openocd_cmd[@]}" 2>&1); then
+        log_message "INFO" "TAP detection output: $tap_output"
+        echo "------- TAP Detection Results -------"
+        echo "$tap_output" | grep -E "(Info|TapName|IR length|IDCODE)" || echo "$tap_output"
+        echo "-------------------------------------"
+
+        # Extract and display IDCODE if found
+        if echo "$tap_output" | grep -q "IDCODE"; then
+            echo
+            echo "Device IDCODE(s) detected:"
+            echo "$tap_output" | grep "IDCODE"
+        fi
+    else
+        log_message "ERROR" "TAP detection failed: $tap_output"
+        echo "ERROR: TAP detection failed."
+        echo "$tap_output"
+    fi
+
+    echo
+    read -r -p "Press Enter to continue..."
+}
+
+jtag_interactive_console() {
+    print_header
+    echo "--- Interactive OpenOCD Console ---"
+    echo
+
+    if ! command -v openocd &> /dev/null; then
+        log_message "ERROR" "'openocd' not found."
+        echo "ERROR: 'openocd' is not installed."
+        sleep 3
+        return
+    fi
+
+    if [ "$JTAG_ADAPTER" == "auto" ] || [ "$TARGET_ARCH" == "auto" ]; then
+        log_message "ERROR" "JTAG adapter or target architecture not set."
+        echo "ERROR: Please configure both JTAG adapter and target architecture."
+        sleep 3
+        return
+    fi
+
+    local ocd_interface_cfg="${OPENOCD_SCRIPT_PATH}/interface/${JTAG_ADAPTER}.cfg"
+    local ocd_target_cfg="${OPENOCD_SCRIPT_PATH}/target/swj-dp.cfg"
+
+    echo "Starting OpenOCD server..."
+    echo "Once started, you can connect via telnet on port 4444"
+    echo
+    echo "Useful commands:"
+    echo "  halt              - Halt the target"
+    echo "  resume            - Resume execution"
+    echo "  reset halt        - Reset and halt"
+    echo "  mdw <addr> <count> - Read memory (word)"
+    echo "  mww <addr> <value> - Write memory (word)"
+    echo "  reg               - Display registers"
+    echo "  shutdown          - Exit OpenOCD"
+    echo
+    echo "Press Ctrl+C to stop the OpenOCD server."
+    echo
+    read -r -p "Press Enter to start OpenOCD server..."
+
+    log_message "INFO" "Starting interactive OpenOCD console"
+
+    # Start OpenOCD in the foreground
+    openocd -f "$ocd_interface_cfg" -f "$ocd_target_cfg" 2>&1 | tee -a "$LOG_FILE"
+
+    echo
+    echo "OpenOCD server stopped."
+    read -r -p "Press Enter to continue..."
+}
+
+jtag_password_recovery() {
+    print_header
+    echo "--- JTAG-Based Password Recovery ---"
+    echo
+    echo "This feature attempts to recover or reset device passwords"
+    echo "by manipulating configuration memory via JTAG."
+    echo
+
+    if ! command -v openocd &> /dev/null; then
+        log_message "ERROR" "'openocd' not found."
+        echo "ERROR: 'openocd' is not installed."
+        sleep 3
+        return
+    fi
+
+    if [ "$JTAG_ADAPTER" == "auto" ] || [ "$TARGET_ARCH" == "auto" ]; then
+        log_message "ERROR" "JTAG adapter or target architecture not set."
+        echo "ERROR: Please configure JTAG adapter and target architecture."
+        sleep 3
+        return
+    fi
+
+    echo "Select recovery method:"
+    echo "  1) Extract and analyze NVRAM for credentials"
+    echo "  2) Patch configuration register (confreg method)"
+    echo "  3) Extract full flash and search for passwords"
+    echo "  b) Back"
+    echo
+    read -r -p "Choose an option: " recovery_choice
+
+    case "$recovery_choice" in
+        1)
+            echo
+            read -r -p "Enter NVRAM base address (hex, e.g., 0x1e000000): " nvram_addr
+            read -r -p "Enter NVRAM size (bytes, e.g., 65536): " nvram_size
+            local nvram_file="${SESSION_DIR}/nvram_dump.bin"
+
+            local ocd_interface_cfg="${OPENOCD_SCRIPT_PATH}/interface/${JTAG_ADAPTER}.cfg"
+            local ocd_target_cfg="${OPENOCD_SCRIPT_PATH}/target/swj-dp.cfg"
+
+            echo "Dumping NVRAM via JTAG..."
+            local openocd_cmd=(
+                "openocd"
+                "-f" "$ocd_interface_cfg"
+                "-f" "$ocd_target_cfg"
+                "-c" "init"
+                "-c" "halt"
+                "-c" "dump_image \"$nvram_file\" $nvram_addr $nvram_size"
+                "-c" "resume"
+                "-c" "exit"
+            )
+
+            log_message "CMD" "${openocd_cmd[*]}"
+
+            if output=$("${openocd_cmd[@]}" 2>&1); then
+                log_message "INFO" "NVRAM dump successful"
+                echo "SUCCESS: NVRAM dumped to $nvram_file"
+                echo
+                echo "Searching for credentials..."
+                echo "------- Potential Credentials -------"
+                strings "$nvram_file" | grep -iE 'password|secret|user|admin|enable' | head -20
+                echo "-------------------------------------"
+                echo
+                echo "Full NVRAM dump saved to: $nvram_file"
+            else
+                log_message "ERROR" "NVRAM dump failed: $output"
+                echo "ERROR: Failed to dump NVRAM."
+            fi
+            ;;
+        2)
+            echo
+            echo "This will attempt to set the configuration register to bypass startup-config."
+            read -r -p "Enter config register address (hex, e.g., 0x1e000008): " confreg_addr
+            read -r -p "Enter bypass value (hex, e.g., 0x2142): " bypass_value
+
+            echo
+            echo "WARNING: Writing incorrect values can brick the device!"
+            read -r -p "Type 'confirm' to proceed: " confirm
+
+            if [[ "$confirm" != "confirm" ]]; then
+                echo "Operation cancelled."
+                sleep 2
+                return
+            fi
+
+            local ocd_interface_cfg="${OPENOCD_SCRIPT_PATH}/interface/${JTAG_ADAPTER}.cfg"
+            local ocd_target_cfg="${OPENOCD_SCRIPT_PATH}/target/swj-dp.cfg"
+
+            echo "Writing configuration register..."
+            local openocd_cmd=(
+                "openocd"
+                "-f" "$ocd_interface_cfg"
+                "-f" "$ocd_target_cfg"
+                "-c" "init"
+                "-c" "halt"
+                "-c" "mww $confreg_addr $bypass_value"
+                "-c" "resume"
+                "-c" "reset"
+                "-c" "exit"
+            )
+
+            log_message "CMD" "${openocd_cmd[*]}"
+
+            if output=$("${openocd_cmd[@]}" 2>&1); then
+                log_message "INFO" "Config register write successful"
+                echo "SUCCESS: Configuration register updated."
+                echo "Device will now boot bypassing startup-config."
+                echo "You can configure a new password after reboot."
+            else
+                log_message "ERROR" "Config register write failed: $output"
+                echo "ERROR: Failed to write configuration register."
+            fi
+            ;;
+        3)
+            echo
+            read -r -p "Enter output file for flash dump: " flash_file
+
+            local ocd_interface_cfg="${OPENOCD_SCRIPT_PATH}/interface/${JTAG_ADAPTER}.cfg"
+            local ocd_target_cfg="${OPENOCD_SCRIPT_PATH}/target/swj-dp.cfg"
+
+            echo "Dumping flash memory..."
+            local openocd_cmd=(
+                "openocd"
+                "-f" "$ocd_interface_cfg"
+                "-f" "$ocd_target_cfg"
+                "-c" "init"
+                "-c" "halt"
+                "-c" "flash read_bank 0 \"$flash_file\" 0 0"
+                "-c" "resume"
+                "-c" "exit"
+            )
+
+            log_message "CMD" "${openocd_cmd[*]}"
+
+            if output=$("${openocd_cmd[@]}" 2>&1); then
+                log_message "INFO" "Flash dump successful"
+                echo "SUCCESS: Flash dumped to $flash_file"
+                echo
+                echo "Searching for passwords in flash..."
+                echo "------- Potential Credentials -------"
+                strings "$flash_file" | grep -iE 'password|secret|enable|username' | head -30
+                echo "-------------------------------------"
+            else
+                log_message "ERROR" "Flash dump failed: $output"
+                echo "ERROR: Failed to dump flash memory."
+            fi
+            ;;
+        b)
+            return
+            ;;
+        *)
+            echo "Invalid option."
+            sleep 1
+            ;;
+    esac
+
+    echo
+    read -r -p "Press Enter to continue..."
+}
+
+jtag_bootloader_recovery() {
+    print_header
+    echo "--- JTAG Bootloader Recovery ---"
+    echo
+    echo "This feature helps recover devices with corrupted bootloaders"
+    echo "by writing a new bootloader image via JTAG."
+    echo
+
+    if ! command -v openocd &> /dev/null; then
+        log_message "ERROR" "'openocd' not found."
+        echo "ERROR: 'openocd' is not installed."
+        sleep 3
+        return
+    fi
+
+    if [ "$JTAG_ADAPTER" == "auto" ] || [ "$TARGET_ARCH" == "auto" ]; then
+        log_message "ERROR" "JTAG adapter or target architecture not set."
+        echo "ERROR: Please configure JTAG adapter and target architecture."
+        sleep 3
+        return
+    fi
+
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo "  WARNING: THIS IS AN EXTREMELY DANGEROUS OPERATION."
+    echo "  Writing an incorrect bootloader WILL brick your device."
+    echo "  You assume all risk. Ensure you have the correct image."
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo
+
+    read -r -p "Enter the path to the bootloader image (.bin): " bootloader_file
+
+    if [ ! -f "$bootloader_file" ]; then
+        log_message "ERROR" "Bootloader file not found: $bootloader_file"
+        echo "ERROR: File not found at '$bootloader_file'."
+        sleep 2
+        return
+    fi
+
+    read -r -p "Enter bootloader flash address (hex, e.g., 0x0): " boot_addr
+
+    echo
+    echo "Bootloader file: $bootloader_file"
+    echo "Target address: $boot_addr"
+    echo "Target arch: $TARGET_ARCH"
+    echo "JTAG adapter: $JTAG_ADAPTER"
+    echo
+
+    read -r -p "Type 'RECOVER' to proceed with bootloader write: " confirm
+
+    if [[ "$confirm" != "RECOVER" ]]; then
+        log_message "INFO" "Bootloader recovery cancelled by user."
+        echo "Operation cancelled."
+        sleep 2
+        return
+    fi
+
+    local ocd_interface_cfg="${OPENOCD_SCRIPT_PATH}/interface/${JTAG_ADAPTER}.cfg"
+    local ocd_target_cfg="${OPENOCD_SCRIPT_PATH}/target/swj-dp.cfg"
+
+    echo
+    echo "Preparing to write bootloader..."
+    echo "This will erase the flash sector and write the new bootloader."
+    echo
+    read -r -p "Press Enter to continue or Ctrl+C to abort..."
+
+    local openocd_cmd=(
+        "openocd"
+        "-f" "$ocd_interface_cfg"
+        "-f" "$ocd_target_cfg"
+        "-c" "init"
+        "-c" "halt"
+        "-c" "flash erase_sector 0 0 0"
+        "-c" "flash write_bank 0 \"$bootloader_file\" $boot_addr"
+        "-c" "verify_image \"$bootloader_file\" $boot_addr"
+        "-c" "reset run"
+        "-c" "exit"
+    )
+
+    log_message "CMD" "${openocd_cmd[*]}"
+    echo "Writing bootloader via JTAG..."
+
+    if output=$("${openocd_cmd[@]}" 2>&1); then
+        log_message "INFO" "Bootloader write successful: $output"
+        echo "---"
+        echo " SUCCESS: Bootloader written and verified."
+        echo " The device has been reset."
+        echo " Monitor the serial console for boot messages."
+        echo "---"
+    else
+        log_message "ERROR" "Bootloader write failed: $output"
+        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo "   ERROR: BOOTLOADER WRITE FAILED."
+        echo "   The device may be bricked."
+        echo "   See log at $LOG_FILE for details."
+        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    fi
+
+    echo
+    read -r -p "Press Enter to continue..."
+}
+
+jtag_memory_patch() {
+    print_header
+    echo "--- JTAG Memory Patching ---"
+    echo
+    echo "This feature allows you to patch memory or flash via JTAG"
+    echo "for recovery purposes (e.g., fixing corrupted data, patching configs)."
+    echo
+
+    if ! command -v openocd &> /dev/null; then
+        log_message "ERROR" "'openocd' not found."
+        echo "ERROR: 'openocd' is not installed."
+        sleep 3
+        return
+    fi
+
+    if [ "$JTAG_ADAPTER" == "auto" ] || [ "$TARGET_ARCH" == "auto" ]; then
+        log_message "ERROR" "JTAG adapter or target architecture not set."
+        echo "ERROR: Please configure JTAG adapter and target architecture."
+        sleep 3
+        return
+    fi
+
+    echo "Select patch operation:"
+    echo "  1) Write single word to memory"
+    echo "  2) Write binary patch to memory"
+    echo "  3) Fill memory region with pattern"
+    echo "  b) Back"
+    echo
+    read -r -p "Choose an option: " patch_choice
+
+    local ocd_interface_cfg="${OPENOCD_SCRIPT_PATH}/interface/${JTAG_ADAPTER}.cfg"
+    local ocd_target_cfg="${OPENOCD_SCRIPT_PATH}/target/swj-dp.cfg"
+
+    case "$patch_choice" in
+        1)
+            echo
+            read -r -p "Enter memory address (hex, e.g., 0x80000000): " mem_addr
+            read -r -p "Enter value to write (hex, e.g., 0x12345678): " mem_value
+
+            echo "Writing word $mem_value to address $mem_addr..."
+
+            local openocd_cmd=(
+                "openocd"
+                "-f" "$ocd_interface_cfg"
+                "-f" "$ocd_target_cfg"
+                "-c" "init"
+                "-c" "halt"
+                "-c" "mww $mem_addr $mem_value"
+                "-c" "resume"
+                "-c" "exit"
+            )
+
+            log_message "CMD" "${openocd_cmd[*]}"
+
+            if output=$("${openocd_cmd[@]}" 2>&1); then
+                log_message "INFO" "Memory write successful"
+                echo "SUCCESS: Memory patched."
+            else
+                log_message "ERROR" "Memory write failed: $output"
+                echo "ERROR: Memory patch failed."
+            fi
+            ;;
+        2)
+            echo
+            read -r -p "Enter binary patch file path: " patch_file
+
+            if [ ! -f "$patch_file" ]; then
+                echo "ERROR: File not found."
+                sleep 2
+                return
+            fi
+
+            read -r -p "Enter target address (hex, e.g., 0x80000000): " target_addr
+
+            echo "Writing binary patch to $target_addr..."
+
+            local openocd_cmd=(
+                "openocd"
+                "-f" "$ocd_interface_cfg"
+                "-f" "$ocd_target_cfg"
+                "-c" "init"
+                "-c" "halt"
+                "-c" "load_image \"$patch_file\" $target_addr"
+                "-c" "resume"
+                "-c" "exit"
+            )
+
+            log_message "CMD" "${openocd_cmd[*]}"
+
+            if output=$("${openocd_cmd[@]}" 2>&1); then
+                log_message "INFO" "Binary patch successful"
+                echo "SUCCESS: Binary patch applied."
+            else
+                log_message "ERROR" "Binary patch failed: $output"
+                echo "ERROR: Binary patch failed."
+            fi
+            ;;
+        3)
+            echo
+            read -r -p "Enter start address (hex, e.g., 0x80000000): " start_addr
+            read -r -p "Enter size in bytes: " fill_size
+            read -r -p "Enter fill pattern (hex, e.g., 0xFF): " fill_pattern
+
+            echo "WARNING: This will overwrite $fill_size bytes of memory!"
+            read -r -p "Type 'confirm' to proceed: " confirm
+
+            if [[ "$confirm" != "confirm" ]]; then
+                echo "Operation cancelled."
+                sleep 2
+                return
+            fi
+
+            # Create a temporary file with the pattern
+            local pattern_file="${SESSION_DIR}/fill_pattern.bin"
+            dd if=/dev/zero bs=1 count="$fill_size" 2>/dev/null | tr '\0' "\x${fill_pattern}" > "$pattern_file"
+
+            echo "Filling memory region..."
+
+            local openocd_cmd=(
+                "openocd"
+                "-f" "$ocd_interface_cfg"
+                "-f" "$ocd_target_cfg"
+                "-c" "init"
+                "-c" "halt"
+                "-c" "load_image \"$pattern_file\" $start_addr"
+                "-c" "resume"
+                "-c" "exit"
+            )
+
+            log_message "CMD" "${openocd_cmd[*]}"
+
+            if output=$("${openocd_cmd[@]}" 2>&1); then
+                log_message "INFO" "Memory fill successful"
+                echo "SUCCESS: Memory region filled."
+            else
+                log_message "ERROR" "Memory fill failed: $output"
+                echo "ERROR: Memory fill failed."
+            fi
+
+            rm -f "$pattern_file"
+            ;;
+        b)
+            return
+            ;;
+        *)
+            echo "Invalid option."
+            sleep 1
+            ;;
+    esac
+
+    echo
+    read -r -p "Press Enter to continue..."
+}
+
+jtag_recovery_wizard() {
+    print_header
+    echo "--- Guided JTAG Recovery Wizard ---"
+    echo
+    echo "This wizard will guide you through common JTAG recovery scenarios."
+    echo
+
+    if ! command -v openocd &> /dev/null; then
+        log_message "ERROR" "'openocd' not found."
+        echo "ERROR: 'openocd' is not installed."
+        sleep 3
+        return
+    fi
+
+    echo "What is your recovery scenario?"
+    echo "  1) Device won't boot (soft-brick recovery)"
+    echo "  2) Forgot password (JTAG password reset)"
+    echo "  3) Corrupted bootloader"
+    echo "  4) Need to extract firmware/config"
+    echo "  b) Back"
+    echo
+    read -r -p "Choose your scenario: " scenario
+
+    case "$scenario" in
+        1)
+            print_header
+            echo "--- Soft-Brick Recovery Wizard ---"
+            echo
+            echo "Steps for recovering a non-booting device:"
+            echo
+            echo "1. First, let's verify JTAG connectivity..."
+            read -r -p "Press Enter to test connection..."
+            jtag_test_connection
+
+            echo
+            echo "2. Next, we'll try to halt the CPU and examine the state..."
+            echo "   You can use the interactive console for this."
+            read -r -p "Launch interactive console? (y/n): " launch_console
+            if [[ "$launch_console" == "y" ]]; then
+                jtag_interactive_console
+            fi
+
+            echo
+            echo "3. Common recovery steps:"
+            echo "   - Extract current flash/bootloader for analysis"
+            echo "   - Check if bootloader is corrupted"
+            echo "   - Re-flash known-good firmware"
+            echo
+            read -r -p "Would you like to extract the current flash? (y/n): " extract_flash
+            if [[ "$extract_flash" == "y" ]]; then
+                exploit_via_jtag "extract_flash"
+            fi
+            ;;
+        2)
+            print_header
+            echo "--- JTAG Password Reset Wizard ---"
+            echo
+            echo "We'll attempt to reset/recover passwords via JTAG."
+            echo
+            read -r -p "Press Enter to start password recovery..."
+            jtag_password_recovery
+            ;;
+        3)
+            print_header
+            echo "--- Bootloader Recovery Wizard ---"
+            echo
+            echo "WARNING: Bootloader recovery is dangerous!"
+            echo "Make sure you have:"
+            echo "  - The correct bootloader image for your device"
+            echo "  - Verified JTAG connectivity"
+            echo "  - Backed up existing flash (if possible)"
+            echo
+            read -r -p "Continue with bootloader recovery? (y/n): " continue_boot
+            if [[ "$continue_boot" == "y" ]]; then
+                jtag_bootloader_recovery
+            fi
+            ;;
+        4)
+            print_header
+            echo "--- Firmware/Config Extraction Wizard ---"
+            echo
+            echo "What would you like to extract?"
+            echo "  1) Full flash memory"
+            echo "  2) RAM dump"
+            echo "  3) NVRAM (configuration)"
+            echo
+            read -r -p "Choose option: " extract_option
+
+            case "$extract_option" in
+                1) exploit_via_jtag "extract_flash" ;;
+                2) exploit_via_jtag "dump_ram" ;;
+                3)
+                    read -r -p "Enter NVRAM address (hex): " nvram_addr
+                    read -r -p "Enter NVRAM size (bytes): " nvram_size
+                    # This would call a custom extraction
+                    echo "Extracting NVRAM..."
+                    ;;
+            esac
+            ;;
+        b)
+            return
+            ;;
+        *)
+            echo "Invalid option."
+            sleep 1
+            ;;
+    esac
+
+    echo
+    read -r -p "Press Enter to return to menu..."
+}
+
+jtag_auto_boot_interrupt() {
+    print_header
+    echo "--- Automated Boot Interception ---"
+    echo
+    echo "This module will monitor the device and automatically interrupt"
+    echo "the boot process, then guide you through recovery options."
+    echo
+
+    if ! command -v openocd &> /dev/null; then
+        log_message "ERROR" "'openocd' not found."
+        echo "ERROR: 'openocd' is not installed."
+        sleep 3
+        return
+    fi
+
+    if [ "$JTAG_ADAPTER" == "auto" ] || [ "$TARGET_ARCH" == "auto" ]; then
+        log_message "ERROR" "JTAG adapter or target architecture not set."
+        echo "ERROR: Please configure JTAG adapter and target architecture first."
+        sleep 3
+        return
+    fi
+
+    echo "Configuration:"
+    echo "  Platform: $PLATFORM"
+    echo "  JTAG Adapter: $JTAG_ADAPTER"
+    echo "  Architecture: $TARGET_ARCH"
+    echo
+    echo "This will:"
+    echo "  1. Start OpenOCD and connect to the device"
+    echo "  2. Wait for boot activity (or power cycle if needed)"
+    echo "  3. Automatically halt the CPU early in boot"
+    echo "  4. Present recovery options"
+    echo
+    read -r -p "Continue? (y/n): " continue_choice
+
+    if [[ "$continue_choice" != "y" ]]; then
+        echo "Operation cancelled."
+        sleep 1
+        return
+    fi
+
+    local ocd_interface_cfg="${OPENOCD_SCRIPT_PATH}/interface/${JTAG_ADAPTER}.cfg"
+    local ocd_target_cfg="${OPENOCD_SCRIPT_PATH}/target/swj-dp.cfg"
+
+    # Create temporary OpenOCD script for boot interception
+    local ocd_script="${SESSION_DIR}/boot_intercept.cfg"
+    cat > "$ocd_script" <<- 'OCDEOF'
+# Boot interception script
+proc boot_intercept {} {
+    echo "=== Boot Interception Active ==="
+    echo "Waiting for device to start booting..."
+    echo "Power cycle the device now if it's not already running."
+    echo ""
+
+    # Try to connect and halt
+    if {[catch {init} err]} {
+        echo "Init failed: $err"
+        echo "Retrying in 2 seconds..."
+        after 2000
+        if {[catch {init} err2]} {
+            echo "Second init attempt failed: $err2"
+            return
+        }
+    }
+
+    echo "Connected to device via JTAG."
+    echo "Waiting 3 seconds for boot to start..."
+    after 3000
+
+    # Attempt to halt the CPU
+    echo "Attempting to halt CPU..."
+    if {[catch {halt} err]} {
+        echo "First halt attempt failed: $err"
+        echo "Retrying..."
+        after 1000
+        if {[catch {halt 1000} err2]} {
+            echo "Second halt attempt failed: $err2"
+        } else {
+            echo "*** CPU HALTED ***"
+        }
+    } else {
+        echo "*** CPU HALTED ***"
+    }
+
+    # Display CPU state
+    echo ""
+    echo "=== Current CPU State ==="
+    if {[catch {reg} err]} {
+        echo "Could not read registers: $err"
+    }
+
+    echo ""
+    echo "=== Boot Intercepted Successfully ==="
+    echo "The device is now halted and ready for recovery operations."
+    echo "OpenOCD telnet server is running on port 4444"
+    echo "Use 'telnet localhost 4444' to access the console."
+    echo ""
+}
+
+# Run the interception
+boot_intercept
+OCDEOF
+
+    echo
+    echo "Starting OpenOCD with boot interception..."
+    echo "==================================================="
+    log_message "INFO" "Starting automated boot interception"
+
+    # Start OpenOCD in the background
+    local openocd_log="${SESSION_DIR}/openocd_boot_intercept.log"
+    openocd -f "$ocd_interface_cfg" -f "$ocd_target_cfg" -f "$ocd_script" > "$openocd_log" 2>&1 &
+    local openocd_pid=$!
+
+    echo "OpenOCD started (PID: $openocd_pid)"
+    echo "Monitoring boot process..."
+    echo
+    echo "*** POWER CYCLE THE DEVICE NOW ***"
+    echo
+    echo "Waiting for boot interception (timeout: 30 seconds)..."
+
+    # Wait and monitor the log
+    local timeout=30
+    local elapsed=0
+    local halted=0
+
+    while [ $elapsed -lt $timeout ]; do
+        if grep -q "CPU HALTED" "$openocd_log" 2>/dev/null; then
+            halted=1
+            break
+        fi
+
+        if ! kill -0 $openocd_pid 2>/dev/null; then
+            echo "ERROR: OpenOCD process died unexpectedly."
+            log_message "ERROR" "OpenOCD process terminated during boot interception"
+            cat "$openocd_log"
+            read -r -p "Press Enter to continue..."
+            return
+        fi
+
+        sleep 1
+        elapsed=$((elapsed + 1))
+
+        # Show progress
+        if [ $((elapsed % 5)) -eq 0 ]; then
+            echo "Still waiting... ($elapsed seconds elapsed)"
+        fi
+    done
+
+    if [ $halted -eq 1 ]; then
+        echo
+        echo "==================================================="
+        echo "*** BOOT SUCCESSFULLY INTERCEPTED ***"
+        echo "==================================================="
+        echo
+        log_message "INFO" "Boot interception successful"
+
+        # Show the boot intercept menu
+        jtag_post_interrupt_menu "$openocd_pid"
+    else
+        echo
+        echo "==================================================="
+        echo "WARNING: Boot interception timed out."
+        echo "The device may not have booted or JTAG connection failed."
+        echo "==================================================="
+        log_message "WARN" "Boot interception timeout"
+        echo
+        echo "OpenOCD is still running. Check the log:"
+        tail -20 "$openocd_log"
+        echo
+        read -r -p "Kill OpenOCD? (y/n): " kill_choice
+        if [[ "$kill_choice" == "y" ]]; then
+            kill $openocd_pid 2>/dev/null
+            echo "OpenOCD terminated."
+        fi
+    fi
+
+    read -r -p "Press Enter to continue..."
+}
+
+jtag_post_interrupt_menu() {
+    local openocd_pid="$1"
+
+    while true; do
+        print_header
+        echo "--- Post-Interrupt Recovery Menu ---"
+        echo
+        echo "  Device Status: HALTED via JTAG"
+        echo "  OpenOCD PID: $openocd_pid (telnet port 4444)"
+        echo "  Platform: $PLATFORM"
+        echo
+        echo "=== Recovery Options ==="
+        echo "  1) Password Reset (NVRAM Method)"
+        echo "  2) Password Reset (Config Register Method)"
+        echo "  3) Dump Firmware/Flash"
+        echo "  4) Dump RAM"
+        echo "  5) Extract NVRAM Configuration"
+        echo "  6) Manual OpenOCD Console (telnet)"
+        echo "  7) Examine Registers & Memory"
+        echo "  8) Resume Boot (Exit Recovery)"
+        echo "  9) Power Off Device (Keep Halted)"
+        echo "  b) Kill OpenOCD & Return"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1)
+                # Password reset via NVRAM
+                print_header
+                echo "--- Password Reset: NVRAM Method ---"
+                echo
+                echo "This will dump NVRAM and search for credentials."
+                echo
+                read -r -p "Enter NVRAM base address (hex, e.g., 0x1e000000): " nvram_addr
+                read -r -p "Enter NVRAM size (bytes, e.g., 65536): " nvram_size
+                local nvram_file="${SESSION_DIR}/nvram_boot_intercept.bin"
+
+                echo
+                echo "Dumping NVRAM via telnet to OpenOCD..."
+
+                # Use telnet to send commands to OpenOCD
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    echo "dump_image \"$nvram_file\" $nvram_addr $nvram_size"
+                    sleep 2
+                    echo "exit"
+                } | telnet localhost 4444 2>&1 | tee "${SESSION_DIR}/nvram_dump_output.log"
+
+                if [ -f "$nvram_file" ]; then
+                    echo
+                    echo "SUCCESS: NVRAM dumped to $nvram_file"
+                    echo
+                    echo "Searching for credentials..."
+                    echo "------- Potential Credentials -------"
+                    strings "$nvram_file" | grep -iE 'password|secret|user|admin|enable|cisco' | head -30
+                    echo "-------------------------------------"
+                    log_message "INFO" "NVRAM dump successful via boot intercept"
+                else
+                    echo "ERROR: NVRAM dump failed. Check OpenOCD output."
+                fi
+
+                read -r -p "Press Enter to continue..."
+                ;;
+            2)
+                # Password reset via config register
+                print_header
+                echo "--- Password Reset: Config Register Method ---"
+                echo
+                echo "This will modify the configuration register to bypass"
+                echo "the startup-config on next boot (confreg 0x2142)."
+                echo
+                read -r -p "Enter config register address (hex, e.g., 0x2102000): " confreg_addr
+                echo
+                echo "Common bypass values:"
+                echo "  Cisco ISR/Router: 0x2142"
+                echo "  Other: Check device documentation"
+                echo
+                read -r -p "Enter bypass value (hex, e.g., 0x2142): " bypass_value
+
+                echo
+                echo "WARNING: Writing incorrect values can brick the device!"
+                read -r -p "Type 'CONFIRM' to proceed: " confirm
+
+                if [[ "$confirm" != "CONFIRM" ]]; then
+                    echo "Operation cancelled."
+                    sleep 2
+                    continue
+                fi
+
+                echo
+                echo "Writing configuration register via OpenOCD..."
+
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    echo "mww $confreg_addr $bypass_value"
+                    sleep 1
+                    echo "mdw $confreg_addr 1"
+                    sleep 1
+                    echo "exit"
+                } | telnet localhost 4444 2>&1 | tee "${SESSION_DIR}/confreg_output.log"
+
+                echo
+                echo "Configuration register write completed."
+                echo "You can now resume boot (option 8) and the device"
+                echo "will bypass startup-config, allowing password reset."
+
+                log_message "INFO" "Config register modified via boot intercept"
+                read -r -p "Press Enter to continue..."
+                ;;
+            3)
+                # Dump firmware/flash
+                print_header
+                echo "--- Dump Firmware/Flash ---"
+                echo
+                read -r -p "Enter output file path: " flash_file
+                read -r -p "Enter flash base address (hex, e.g., 0x0): " flash_addr
+                read -r -p "Enter size to dump (bytes, e.g., 16777216): " flash_size
+
+                echo
+                echo "Dumping flash memory..."
+
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    echo "dump_image \"$flash_file\" $flash_addr $flash_size"
+                    sleep 5
+                    echo "exit"
+                } | telnet localhost 4444 2>&1 | tee "${SESSION_DIR}/flash_dump_output.log"
+
+                if [ -f "$flash_file" ]; then
+                    echo
+                    echo "SUCCESS: Flash dumped to $flash_file"
+                    echo "File size: $(du -h "$flash_file" | cut -f1)"
+                    log_message "INFO" "Flash dump successful via boot intercept: $flash_file"
+                else
+                    echo "ERROR: Flash dump failed."
+                fi
+
+                read -r -p "Press Enter to continue..."
+                ;;
+            4)
+                # Dump RAM
+                print_header
+                echo "--- Dump RAM ---"
+                echo
+                read -r -p "Enter output file path: " ram_file
+                read -r -p "Enter RAM base address (hex, e.g., 0x80000000): " ram_addr
+                read -r -p "Enter size to dump (bytes, e.g., 134217728): " ram_size
+
+                echo
+                echo "Dumping RAM..."
+
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    echo "dump_image \"$ram_file\" $ram_addr $ram_size"
+                    sleep 3
+                    echo "exit"
+                } | telnet localhost 4444 2>&1 | tee "${SESSION_DIR}/ram_dump_output.log"
+
+                if [ -f "$ram_file" ]; then
+                    echo
+                    echo "SUCCESS: RAM dumped to $ram_file"
+                    echo "File size: $(du -h "$ram_file" | cut -f1)"
+                    log_message "INFO" "RAM dump successful via boot intercept: $ram_file"
+                else
+                    echo "ERROR: RAM dump failed."
+                fi
+
+                read -r -p "Press Enter to continue..."
+                ;;
+            5)
+                # Extract NVRAM configuration
+                print_header
+                echo "--- Extract NVRAM Configuration ---"
+                echo
+                echo "This extracts the full NVRAM including startup-config."
+                echo
+                read -r -p "Enter NVRAM base address (hex, e.g., 0x1e000000): " nvram_addr
+                read -r -p "Enter NVRAM size (bytes, e.g., 131072): " nvram_size
+                local nvram_file="${SESSION_DIR}/nvram_full_config.bin"
+
+                echo
+                echo "Extracting NVRAM configuration..."
+
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    echo "dump_image \"$nvram_file\" $nvram_addr $nvram_size"
+                    sleep 2
+                    echo "exit"
+                } | telnet localhost 4444 2>&1
+
+                if [ -f "$nvram_file" ]; then
+                    echo
+                    echo "SUCCESS: NVRAM extracted to $nvram_file"
+                    echo
+                    echo "Searching for configuration data..."
+                    echo "------- Configuration Snippets -------"
+                    strings "$nvram_file" | grep -E '^(interface|ip|router|line|enable|username|hostname)' | head -50
+                    echo "--------------------------------------"
+                    echo
+                    echo "Full NVRAM saved to: $nvram_file"
+                    log_message "INFO" "NVRAM configuration extracted via boot intercept"
+                else
+                    echo "ERROR: NVRAM extraction failed."
+                fi
+
+                read -r -p "Press Enter to continue..."
+                ;;
+            6)
+                # Manual console
+                print_header
+                echo "--- Manual OpenOCD Console ---"
+                echo
+                echo "OpenOCD telnet server is running on localhost:4444"
+                echo
+                echo "Useful commands:"
+                echo "  halt              - Halt the CPU"
+                echo "  resume            - Resume execution"
+                echo "  reset halt        - Reset and halt"
+                echo "  reg               - Display registers"
+                echo "  mdw <addr> <cnt>  - Read memory (word)"
+                echo "  mww <addr> <val>  - Write memory (word)"
+                echo "  dump_image <file> <addr> <size> - Dump memory"
+                echo "  load_image <file> <addr> - Load to memory"
+                echo "  step              - Single step"
+                echo
+                echo "Connecting to telnet console..."
+                echo "Type 'exit' or Ctrl+] then 'quit' to return."
+                echo
+                read -r -p "Press Enter to connect..."
+
+                telnet localhost 4444
+
+                echo
+                echo "Disconnected from OpenOCD console."
+                read -r -p "Press Enter to continue..."
+                ;;
+            7)
+                # Examine registers & memory
+                print_header
+                echo "--- Examine Registers & Memory ---"
+                echo
+                echo "Retrieving CPU state..."
+
+                local exam_output="${SESSION_DIR}/examination_output.log"
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    echo "reg"
+                    sleep 1
+                    echo "exit"
+                } | telnet localhost 4444 2>&1 | tee "$exam_output"
+
+                echo
+                echo "=== Register Dump ==="
+                grep -A 50 "reg" "$exam_output" | head -60
+                echo "====================="
+                echo
+
+                read -r -p "Examine specific memory address? (y/n): " exam_mem
+                if [[ "$exam_mem" == "y" ]]; then
+                    read -r -p "Enter address (hex): " exam_addr
+                    read -r -p "Enter word count: " exam_count
+
+                    {
+                        sleep 1
+                        echo "mdw $exam_addr $exam_count"
+                        sleep 1
+                        echo "exit"
+                    } | telnet localhost 4444 2>&1
+                fi
+
+                echo
+                read -r -p "Press Enter to continue..."
+                ;;
+            8)
+                # Resume boot
+                print_header
+                echo "--- Resume Boot ---"
+                echo
+                echo "This will resume device execution and continue booting."
+                echo
+                read -r -p "Resume now? (y/n): " resume_choice
+
+                if [[ "$resume_choice" == "y" ]]; then
+                    echo
+                    echo "Resuming device..."
+
+                    {
+                        sleep 1
+                        echo "resume"
+                        sleep 1
+                        echo "exit"
+                    } | telnet localhost 4444 2>&1
+
+                    echo
+                    echo "Device resumed. Boot should continue."
+                    echo "Monitor the serial console for boot messages."
+                    log_message "INFO" "Device boot resumed after interception"
+
+                    read -r -p "Press Enter to continue..."
+                fi
+                ;;
+            9)
+                # Power off device
+                print_header
+                echo "--- Power Off Device ---"
+                echo
+                echo "The device will remain halted via JTAG."
+                echo "You can manually power off the device now."
+                echo
+                echo "OpenOCD will keep running. Use option 'b' to kill it."
+                read -r -p "Press Enter to continue..."
+                ;;
+            b)
+                # Kill OpenOCD and return
+                print_header
+                echo "--- Terminating OpenOCD ---"
+                echo
+                read -r -p "Kill OpenOCD and return to menu? (y/n): " kill_choice
+
+                if [[ "$kill_choice" == "y" ]]; then
+                    if kill -0 $openocd_pid 2>/dev/null; then
+                        kill $openocd_pid 2>/dev/null
+                        sleep 1
+                        echo "OpenOCD terminated (PID: $openocd_pid)"
+                        log_message "INFO" "OpenOCD terminated after boot interception session"
+                    else
+                        echo "OpenOCD process already terminated."
+                    fi
+                    break
+                fi
+                ;;
+            *)
+                echo "Invalid option."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+menu_jtag_cable_recovery() {
+    while true; do
+        print_header
+        echo "--- JTAG Cable Assisted Recovery ---"
+        echo "  Current Adapter: $JTAG_ADAPTER"
+        echo "  Current Architecture: $TARGET_ARCH"
+        echo
+        echo "  1) Test JTAG Cable Connection"
+        echo "  2) Detect JTAG TAPs & Diagnostics"
+        echo "  3) Interactive OpenOCD Console"
+        echo "  4) Automated Boot Interception (NEW)"
+        echo "  5) JTAG Password Recovery"
+        echo "  6) JTAG Bootloader Recovery"
+        echo "  7) JTAG Memory Patching"
+        echo "  8) Guided Recovery Wizard"
+        echo "  b) Back to Main Menu"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1) jtag_test_connection ;;
+            2) jtag_detect_taps ;;
+            3) jtag_interactive_console ;;
+            4) jtag_auto_boot_interrupt ;;
+            5) jtag_password_recovery ;;
+            6) jtag_bootloader_recovery ;;
+            7) jtag_memory_patch ;;
+            8) jtag_recovery_wizard ;;
+            b) break ;;
+            *) echo "Invalid option." && sleep 1 ;;
+        esac
+    done
+}
+
+# --- Firmware Modification Workshop ---
+
+firmware_unpack_analyze() {
+    print_header
+    echo "--- Firmware Unpacker & Analyzer ---"
+    echo
+    echo "This tool extracts and analyzes firmware images."
+    echo
+
+    if ! command -v binwalk &> /dev/null; then
+        log_message "WARN" "binwalk not found."
+        echo "WARNING: 'binwalk' is not installed. Some features may be limited."
+        echo "Install with: sudo apt-get install binwalk"
+        echo
+    fi
+
+    read -r -p "Enter firmware image path: " firmware_file
+
+    if [ ! -f "$firmware_file" ]; then
+        log_message "ERROR" "Firmware file not found: $firmware_file"
+        echo "ERROR: File not found at '$firmware_file'."
+        sleep 2
+        return
+    fi
+
+    local fw_work_dir="${SESSION_DIR}/firmware_analysis"
+    mkdir -p "$fw_work_dir"
+
+    echo "Firmware file: $firmware_file"
+    echo "Working directory: $fw_work_dir"
+    echo
+    echo "Analysis Options:"
+    echo "  1) Quick analysis (file type, entropy)"
+    echo "  2) Full extraction (binwalk -e)"
+    echo "  3) Signature scan only"
+    echo "  4) Extract filesystem and analyze"
+    echo "  5) Search for embedded credentials"
+    echo "  b) Back"
+    echo
+    read -r -p "Choose analysis type: " analysis_type
+
+    case "$analysis_type" in
+        1)
+            echo
+            echo "=== Quick Analysis ==="
+            echo
+            echo "File information:"
+            file "$firmware_file"
+            echo
+            echo "File size: $(du -h "$firmware_file" | cut -f1)"
+            echo
+
+            if command -v binwalk &> /dev/null; then
+                echo "Entropy analysis (checking for compression/encryption):"
+                binwalk -E "$firmware_file" 2>&1 | tail -20
+                echo
+                echo "Signature scan:"
+                binwalk "$firmware_file" | head -30
+            fi
+            ;;
+        2)
+            echo
+            echo "Extracting firmware with binwalk..."
+            cd "$fw_work_dir"
+
+            if binwalk -e "$firmware_file" 2>&1 | tee extraction.log; then
+                echo
+                echo "SUCCESS: Firmware extracted to:"
+                echo "$fw_work_dir"
+                echo
+                echo "Extracted contents:"
+                ls -lh "$fw_work_dir"
+                echo
+                echo "Searching for filesystems..."
+                find "$fw_work_dir" -type d -name "*filesystem*" -o -name "*rootfs*" -o -name "*squashfs-root*"
+                log_message "INFO" "Firmware extracted to $fw_work_dir"
+            else
+                echo "ERROR: Extraction failed. Check extraction.log"
+                log_message "ERROR" "Firmware extraction failed"
+            fi
+            cd - > /dev/null
+            ;;
+        3)
+            echo
+            echo "=== Signature Scan ==="
+            binwalk "$firmware_file" | tee "${fw_work_dir}/signatures.txt"
+            echo
+            echo "Signatures saved to: ${fw_work_dir}/signatures.txt"
+            ;;
+        4)
+            echo
+            echo "Extracting and analyzing filesystem..."
+            cd "$fw_work_dir"
+
+            binwalk -e "$firmware_file" 2>&1 | tee extraction.log
+
+            echo
+            echo "Searching for filesystem directories..."
+            local fs_dirs=$(find "$fw_work_dir" -type d \( -name "*filesystem*" -o -name "*rootfs*" -o -name "*squashfs-root*" \) | head -1)
+
+            if [ -n "$fs_dirs" ]; then
+                echo "Found filesystem: $fs_dirs"
+                echo
+                echo "=== Filesystem Analysis ==="
+                echo
+                echo "Directory structure:"
+                ls -lh "$fs_dirs" | head -20
+                echo
+                echo "Searching for sensitive files..."
+                find "$fs_dirs" -type f \( -name "*.conf" -o -name "*.cfg" -o -name "passwd" -o -name "shadow" -o -name "*.key" -o -name "*.pem" \) | head -20
+                echo
+                echo "Searching for scripts and binaries..."
+                find "$fs_dirs" -type f \( -name "*.sh" -o -perm -111 \) | head -20
+
+                log_message "INFO" "Filesystem analysis complete: $fs_dirs"
+            else
+                echo "No filesystem found in extraction."
+            fi
+            cd - > /dev/null
+            ;;
+        5)
+            echo
+            echo "=== Searching for Embedded Credentials ==="
+            echo
+            echo "Scanning for passwords, keys, and secrets..."
+            strings "$firmware_file" | grep -iE '(password|passwd|pwd|secret|api_key|private_key|rsa|ssh|enable)' | head -50 | tee "${fw_work_dir}/credentials.txt"
+            echo
+            echo "Results saved to: ${fw_work_dir}/credentials.txt"
+            log_message "INFO" "Credential scan complete"
+            ;;
+        b)
+            return
+            ;;
+        *)
+            echo "Invalid option."
+            sleep 1
+            return
+            ;;
+    esac
+
+    echo
+    read -r -p "Press Enter to continue..."
+}
+
+firmware_binary_patch() {
+    print_header
+    echo "--- Binary Firmware Patcher ---"
+    echo
+    echo "This tool allows you to patch firmware binaries."
+    echo
+
+    read -r -p "Enter firmware image path: " firmware_file
+
+    if [ ! -f "$firmware_file" ]; then
+        echo "ERROR: File not found at '$firmware_file'."
+        sleep 2
+        return
+    fi
+
+    local patched_file="${firmware_file}.patched"
+
+    echo
+    echo "Firmware: $firmware_file"
+    echo "Patched output: $patched_file"
+    echo
+    echo "Patch Options:"
+    echo "  1) Replace hex bytes at offset"
+    echo "  2) Replace string"
+    echo "  3) Patch out signature check (NOP specific bytes)"
+    echo "  4) Apply custom binary patch file"
+    echo "  5) Modify IP address/URL"
+    echo "  b) Back"
+    echo
+    read -r -p "Choose patch type: " patch_type
+
+    # Create working copy
+    cp "$firmware_file" "$patched_file"
+
+    case "$patch_type" in
+        1)
+            echo
+            read -r -p "Enter hex offset (e.g., 0x1000 or 4096): " offset
+            read -r -p "Enter hex bytes to write (e.g., 90 90 90 or 00 00): " hex_bytes
+
+            # Convert hex offset if needed
+            if [[ "$offset" =~ ^0x ]]; then
+                offset=$((offset))
+            fi
+
+            echo "Writing bytes at offset $offset..."
+
+            # Use xxd to patch
+            echo "$hex_bytes" | xxd -r -p | dd of="$patched_file" bs=1 seek="$offset" conv=notrunc 2>&1
+
+            if [ $? -eq 0 ]; then
+                echo "SUCCESS: Firmware patched."
+                echo "Patched file: $patched_file"
+                log_message "INFO" "Binary patch applied at offset $offset"
+            else
+                echo "ERROR: Patch failed."
+                log_message "ERROR" "Binary patch failed"
+            fi
+            ;;
+        2)
+            echo
+            read -r -p "Enter string to find: " find_str
+            read -r -p "Enter replacement string (same length recommended): " replace_str
+
+            echo "Searching for string '$find_str'..."
+
+            # Find offset of string
+            local offset=$(grep -abo "$find_str" "$patched_file" | head -1 | cut -d: -f1)
+
+            if [ -n "$offset" ]; then
+                echo "Found at offset: $offset"
+                echo "Replacing with: $replace_str"
+
+                # Pad replacement if needed
+                local find_len=${#find_str}
+                local replace_len=${#replace_str}
+
+                if [ $replace_len -lt $find_len ]; then
+                    # Pad with nulls
+                    replace_str="${replace_str}$(printf '\x00%.0s' $(seq 1 $((find_len - replace_len))))"
+                    echo "Padded replacement to match original length"
+                elif [ $replace_len -gt $find_len ]; then
+                    echo "WARNING: Replacement is longer than original. Truncating."
+                    replace_str="${replace_str:0:$find_len}"
+                fi
+
+                printf "%s" "$replace_str" | dd of="$patched_file" bs=1 seek="$offset" conv=notrunc 2>&1
+
+                echo "SUCCESS: String replaced."
+                log_message "INFO" "String patch applied: $find_str -> $replace_str"
+            else
+                echo "ERROR: String not found in firmware."
+            fi
+            ;;
+        3)
+            echo
+            echo "This will replace specified bytes with NOP instructions (0x90 for x86, 0x00 for ARM)"
+            echo
+            read -r -p "Enter offset to NOP (hex, e.g., 0x1000): " nop_offset
+            read -r -p "Enter number of bytes to NOP: " nop_count
+            read -r -p "NOP byte value (0x90 for x86, 0x00 for ARM) [90]: " nop_byte
+            nop_byte=${nop_byte:-90}
+
+            # Convert offset
+            if [[ "$nop_offset" =~ ^0x ]]; then
+                nop_offset=$((nop_offset))
+            fi
+
+            echo "NOPing $nop_count bytes at offset $nop_offset with 0x$nop_byte..."
+
+            # Create NOP sequence
+            yes "$nop_byte" | head -n "$nop_count" | xxd -r -p | dd of="$patched_file" bs=1 seek="$nop_offset" conv=notrunc 2>&1
+
+            echo "SUCCESS: Bytes NOPed."
+            echo "This may bypass signature checks if applied correctly."
+            log_message "INFO" "NOP patch applied at $nop_offset ($nop_count bytes)"
+            ;;
+        4)
+            echo
+            read -r -p "Enter patch file path (binary diff): " patch_file
+
+            if [ ! -f "$patch_file" ]; then
+                echo "ERROR: Patch file not found."
+                sleep 2
+                return
+            fi
+
+            read -r -p "Enter offset to apply patch: " patch_offset
+
+            if [[ "$patch_offset" =~ ^0x ]]; then
+                patch_offset=$((patch_offset))
+            fi
+
+            echo "Applying patch..."
+            dd if="$patch_file" of="$patched_file" bs=1 seek="$patch_offset" conv=notrunc 2>&1
+
+            echo "SUCCESS: Patch applied."
+            log_message "INFO" "Custom patch applied from $patch_file"
+            ;;
+        5)
+            echo
+            read -r -p "Enter IP/URL to find: " find_ip
+            read -r -p "Enter new IP/URL: " replace_ip
+
+            # Ensure same length
+            if [ ${#find_ip} -ne ${#replace_ip} ]; then
+                echo "WARNING: Strings are different lengths. Padding/truncating..."
+                if [ ${#replace_ip} -lt ${#find_ip} ]; then
+                    replace_ip=$(printf "%-${#find_ip}s" "$replace_ip")
+                else
+                    replace_ip="${replace_ip:0:${#find_ip}}"
+                fi
+            fi
+
+            echo "Searching for '$find_ip'..."
+            local offset=$(grep -abo "$find_ip" "$patched_file" | head -1 | cut -d: -f1)
+
+            if [ -n "$offset" ]; then
+                echo "Found at offset: $offset"
+                printf "%s" "$replace_ip" | dd of="$patched_file" bs=1 seek="$offset" conv=notrunc 2>&1
+                echo "SUCCESS: IP/URL modified."
+                log_message "INFO" "IP/URL patch: $find_ip -> $replace_ip"
+            else
+                echo "ERROR: IP/URL not found."
+            fi
+            ;;
+        b)
+            return
+            ;;
+        *)
+            echo "Invalid option."
+            sleep 1
+            return
+            ;;
+    esac
+
+    echo
+    echo "Patched firmware saved to: $patched_file"
+    echo "Original firmware unchanged: $firmware_file"
+    echo
+    read -r -p "Press Enter to continue..."
+}
+
+firmware_flash_workflow() {
+    print_header
+    echo "--- Firmware Flash Workflow ---"
+    echo
+    echo "This workflow guides you through flashing modified firmware."
+    echo
+
+    echo "Workflow:"
+    echo "  1. Dump current firmware (backup)"
+    echo "  2. Modify firmware (patch/customize)"
+    echo "  3. Flash modified firmware via JTAG"
+    echo "  4. Monitor boot and verify"
+    echo
+    echo "Current Status:"
+    echo "  Platform: $PLATFORM"
+    echo "  JTAG Adapter: $JTAG_ADAPTER"
+    echo "  Architecture: $TARGET_ARCH"
+    echo
+    echo "Options:"
+    echo "  1) Start full workflow (dump → modify → flash)"
+    echo "  2) Dump current firmware only"
+    echo "  3) Flash pre-modified firmware"
+    echo "  4) Quick patch and flash"
+    echo "  b) Back"
+    echo
+    read -r -p "Choose option: " workflow_choice
+
+    case "$workflow_choice" in
+        1)
+            echo
+            echo "=== Step 1: Dump Current Firmware ==="
+            echo "First, let's backup the current firmware..."
+            read -r -p "Press Enter to dump firmware via JTAG..."
+
+            exploit_via_jtag "extract_flash"
+
+            echo
+            echo "=== Step 2: Modify Firmware ==="
+            read -r -p "Ready to modify firmware? (y/n): " ready_modify
+
+            if [[ "$ready_modify" == "y" ]]; then
+                firmware_binary_patch
+            fi
+
+            echo
+            echo "=== Step 3: Flash Modified Firmware ==="
+            read -r -p "Ready to flash modified firmware? (y/n): " ready_flash
+
+            if [[ "$ready_flash" == "y" ]]; then
+                jtag_flash_write
+            fi
+
+            echo
+            echo "Workflow complete. Monitor serial console for boot messages."
+            ;;
+        2)
+            exploit_via_jtag "extract_flash"
+            ;;
+        3)
+            echo
+            echo "Flashing pre-modified firmware..."
+            jtag_flash_write
+            ;;
+        4)
+            echo
+            echo "Quick patch workflow:"
+            echo "This will prompt for a simple patch, then flash immediately."
+            echo
+            read -r -p "Enter firmware to patch: " quick_fw
+
+            if [ ! -f "$quick_fw" ]; then
+                echo "ERROR: File not found."
+                sleep 2
+                return
+            fi
+
+            # Quick string replacement
+            read -r -p "Enter string to replace: " quick_find
+            read -r -p "Enter replacement: " quick_replace
+
+            local quick_patched="${quick_fw}.quick_patched"
+            cp "$quick_fw" "$quick_patched"
+
+            local offset=$(grep -abo "$quick_find" "$quick_patched" | head -1 | cut -d: -f1)
+            if [ -n "$offset" ]; then
+                printf "%s" "$quick_replace" | dd of="$quick_patched" bs=1 seek="$offset" conv=notrunc 2>&1
+                echo "Patched! Now flashing..."
+                echo
+
+                # Flash it
+                jtag_flash_write
+            else
+                echo "ERROR: String not found."
+            fi
+            ;;
+        b)
+            return
+            ;;
+        *)
+            echo "Invalid option."
+            sleep 1
+            ;;
+    esac
+
+    echo
+    read -r -p "Press Enter to continue..."
+}
+
+menu_firmware_workshop() {
+    while true; do
+        print_header
+        echo "--- Firmware Modification Workshop ---"
+        echo
+        echo "  1) Firmware Unpacker & Analyzer"
+        echo "  2) Binary Firmware Patcher"
+        echo "  3) Firmware Flash Workflow (Dump → Modify → Flash)"
+        echo "  4) Extract from Halted Device (Boot Intercept Integration)"
+        echo "  b) Back to Main Menu"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1) firmware_unpack_analyze ;;
+            2) firmware_binary_patch ;;
+            3) firmware_flash_workflow ;;
+            4)
+                echo
+                echo "This option requires boot interception to be active."
+                echo "Use: Main Menu → JTAG Cable Assisted Recovery → Automated Boot Interception"
+                echo "Then use option 3 (Dump Firmware/Flash) from the post-interrupt menu."
+                read -r -p "Press Enter to continue..."
+                ;;
+            b) break ;;
+            *) echo "Invalid option." && sleep 1 ;;
+        esac
+    done
+}
+
+# --- End Firmware Modification Workshop ---
+
+# --- Advanced Firmware Analysis Suite ---
+
+firmware_automated_teardown() {
+    print_header
+    echo "=== Automated Firmware Teardown Analyzer ==="
+    echo
+    echo "This performs a comprehensive automated analysis of firmware:"
+    echo "  - File type and format identification"
+    echo "  - Entropy analysis (detect encryption/compression)"
+    echo "  - String extraction and categorization"
+    echo "  - Function signature detection"
+    echo "  - Embedded file detection"
+    echo "  - Architecture detection"
+    echo
+
+    read -r -p "Enter path to firmware file: " firmware_file
+
+    if [ ! -f "$firmware_file" ]; then
+        echo "ERROR: File not found: $firmware_file"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    local output_dir="${SESSION_DIR}/teardown_$(basename "$firmware_file")"
+    mkdir -p "$output_dir"
+
+    log_message "INFO" "Starting automated firmware teardown: $firmware_file"
+
+    echo
+    echo ">>> Step 1/6: File Identification"
+    echo "-----------------------------------"
+    if command -v file &> /dev/null; then
+        file "$firmware_file" | tee "$output_dir/file_type.txt"
+    else
+        echo "WARNING: 'file' command not available"
+    fi
+
+    echo
+    echo ">>> Step 2/6: Entropy Analysis"
+    echo "-------------------------------"
+    if command -v binwalk &> /dev/null; then
+        echo "Analyzing entropy (high entropy = encrypted/compressed)..."
+        binwalk -E "$firmware_file" 2>&1 | tee "$output_dir/entropy.txt"
+    else
+        echo "WARNING: binwalk not available, skipping entropy analysis"
+    fi
+
+    echo
+    echo ">>> Step 3/6: String Extraction & Categorization"
+    echo "------------------------------------------------"
+    if command -v strings &> /dev/null; then
+        local strings_file="$output_dir/all_strings.txt"
+        echo "Extracting readable strings..."
+        strings "$firmware_file" > "$strings_file"
+        local total_strings=$(wc -l < "$strings_file")
+        echo "  Total strings found: $total_strings"
+
+        # Categorize interesting strings
+        echo
+        echo "Categorizing interesting patterns:"
+
+        # URLs and IPs
+        grep -Ei '(https?://|ftp://|[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})' "$strings_file" > "$output_dir/urls_ips.txt" 2>/dev/null
+        local url_count=$(wc -l < "$output_dir/urls_ips.txt" 2>/dev/null || echo 0)
+        echo "  URLs/IPs: $url_count found → $output_dir/urls_ips.txt"
+
+        # Passwords and credentials
+        grep -Ei '(password|passwd|pwd|secret|key|token|api|auth|credential)' "$strings_file" > "$output_dir/credentials.txt" 2>/dev/null
+        local cred_count=$(wc -l < "$output_dir/credentials.txt" 2>/dev/null || echo 0)
+        echo "  Credential patterns: $cred_count found → $output_dir/credentials.txt"
+
+        # File paths
+        grep -E '^(/[a-zA-Z0-9_\-./]+|[A-Z]:\\)' "$strings_file" > "$output_dir/paths.txt" 2>/dev/null
+        local path_count=$(wc -l < "$output_dir/paths.txt" 2>/dev/null || echo 0)
+        echo "  File paths: $path_count found → $output_dir/paths.txt"
+
+        # Version strings
+        grep -Ei '(version|v[0-9]+\.[0-9]+|build|release)' "$strings_file" > "$output_dir/versions.txt" 2>/dev/null
+        local ver_count=$(wc -l < "$output_dir/versions.txt" 2>/dev/null || echo 0)
+        echo "  Version strings: $ver_count found → $output_dir/versions.txt"
+
+        # Email addresses
+        grep -Ei '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' "$strings_file" > "$output_dir/emails.txt" 2>/dev/null
+        local email_count=$(wc -l < "$output_dir/emails.txt" 2>/dev/null || echo 0)
+        echo "  Email addresses: $email_count found → $output_dir/emails.txt"
+    else
+        echo "WARNING: 'strings' command not available"
+    fi
+
+    echo
+    echo ">>> Step 4/6: Function Signature Detection"
+    echo "------------------------------------------"
+    if command -v strings &> /dev/null; then
+        # Look for common function patterns and symbols
+        local symbols_file="$output_dir/function_signatures.txt"
+        echo "Searching for function signatures..."
+
+        # Common function prefixes/patterns
+        strings "$firmware_file" | grep -E '^[a-zA-Z_][a-zA-Z0-9_]*\(' > "$symbols_file" 2>/dev/null || true
+        strings "$firmware_file" | grep -Ei '(main|init|setup|boot|start|exit|printf|scanf|malloc|free)' >> "$symbols_file" 2>/dev/null || true
+
+        local func_count=$(sort -u "$symbols_file" | wc -l 2>/dev/null || echo 0)
+        echo "  Function-like symbols: $func_count unique patterns found"
+        echo "  → $symbols_file"
+
+        # Look for common library indicators
+        echo
+        echo "Library/Framework Detection:"
+        strings "$firmware_file" | grep -Ei '(openssl|libc|glibc|uclibc|busybox|dropbear|openssh|u-boot)' | sort -u | head -20
+    else
+        echo "WARNING: 'strings' command not available"
+    fi
+
+    echo
+    echo ">>> Step 5/6: Embedded File Detection"
+    echo "--------------------------------------"
+    if command -v binwalk &> /dev/null; then
+        echo "Scanning for embedded files and filesystems..."
+        binwalk "$firmware_file" 2>&1 | tee "$output_dir/embedded_files.txt"
+    else
+        echo "WARNING: binwalk not available"
+    fi
+
+    echo
+    echo ">>> Step 6/6: Architecture Detection"
+    echo "-------------------------------------"
+    if command -v binwalk &> /dev/null; then
+        echo "Detecting CPU architecture..."
+        binwalk -A "$firmware_file" 2>&1 | head -30 | tee "$output_dir/architecture.txt"
+    else
+        echo "WARNING: binwalk not available for architecture detection"
+        echo "Attempting basic heuristic detection..."
+        if strings "$firmware_file" | grep -qi 'arm'; then
+            echo "  Potential ARM architecture detected (ARM strings found)"
+        fi
+        if strings "$firmware_file" | grep -qi 'mips'; then
+            echo "  Potential MIPS architecture detected (MIPS strings found)"
+        fi
+        if strings "$firmware_file" | grep -qi 'x86\|i386\|i686'; then
+            echo "  Potential x86 architecture detected (x86 strings found)"
+        fi
+    fi
+
+    echo
+    echo "========================================="
+    echo "Teardown Complete!"
+    echo "========================================="
+    echo "All results saved to: $output_dir"
+    echo
+    echo "Summary:"
+    echo "  - File type: $(head -1 "$output_dir/file_type.txt" 2>/dev/null || echo 'N/A')"
+    echo "  - Analysis directory: $output_dir"
+    echo
+
+    log_message "INFO" "Firmware teardown completed: $output_dir"
+
+    read -r -p "Press Enter to continue..."
+}
+
+firmware_binary_diff() {
+    print_header
+    echo "=== Binary Firmware Differ ==="
+    echo
+    echo "Compare two firmware versions to identify changes:"
+    echo "  - Byte-level differences"
+    echo "  - Added/removed strings"
+    echo "  - Changed functions"
+    echo "  - Modified embedded files"
+    echo
+
+    read -r -p "Enter path to ORIGINAL firmware: " fw1
+    read -r -p "Enter path to MODIFIED firmware: " fw2
+
+    if [ ! -f "$fw1" ]; then
+        echo "ERROR: Original firmware not found: $fw1"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    if [ ! -f "$fw2" ]; then
+        echo "ERROR: Modified firmware not found: $fw2"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    local diff_dir="${SESSION_DIR}/diff_$(date +%s)"
+    mkdir -p "$diff_dir"
+
+    log_message "INFO" "Starting firmware binary diff: $fw1 vs $fw2"
+
+    echo
+    echo ">>> Step 1/5: File Size Comparison"
+    echo "-----------------------------------"
+    local size1=$(stat -c%s "$fw1" 2>/dev/null || stat -f%z "$fw1" 2>/dev/null)
+    local size2=$(stat -c%s "$fw2" 2>/dev/null || stat -f%z "$fw2" 2>/dev/null)
+    echo "  Original: $size1 bytes"
+    echo "  Modified: $size2 bytes"
+    echo "  Difference: $((size2 - size1)) bytes"
+
+    echo
+    echo ">>> Step 2/5: Checksum Comparison"
+    echo "----------------------------------"
+    if command -v md5sum &> /dev/null; then
+        echo "  Original MD5: $(md5sum "$fw1" | awk '{print $1}')"
+        echo "  Modified MD5: $(md5sum "$fw2" | awk '{print $1}')"
+    fi
+    if command -v sha256sum &> /dev/null; then
+        echo "  Original SHA256: $(sha256sum "$fw1" | awk '{print $1}')"
+        echo "  Modified SHA256: $(sha256sum "$fw2" | awk '{print $1}')"
+    fi
+
+    echo
+    echo ">>> Step 3/5: String Differences"
+    echo "---------------------------------"
+    if command -v strings &> /dev/null; then
+        echo "Extracting strings from both files..."
+        strings "$fw1" | sort -u > "$diff_dir/strings_fw1.txt"
+        strings "$fw2" | sort -u > "$diff_dir/strings_fw2.txt"
+
+        echo "Computing differences..."
+
+        # Strings only in fw1 (removed)
+        comm -23 "$diff_dir/strings_fw1.txt" "$diff_dir/strings_fw2.txt" > "$diff_dir/strings_removed.txt"
+        local removed_count=$(wc -l < "$diff_dir/strings_removed.txt")
+
+        # Strings only in fw2 (added)
+        comm -13 "$diff_dir/strings_fw1.txt" "$diff_dir/strings_fw2.txt" > "$diff_dir/strings_added.txt"
+        local added_count=$(wc -l < "$diff_dir/strings_added.txt")
+
+        echo "  Removed strings: $removed_count → $diff_dir/strings_removed.txt"
+        echo "  Added strings: $added_count → $diff_dir/strings_added.txt"
+
+        if [ "$added_count" -gt 0 ]; then
+            echo
+            echo "Sample of added strings (first 20):"
+            head -20 "$diff_dir/strings_added.txt" | sed 's/^/    /'
+        fi
+    else
+        echo "WARNING: 'strings' command not available"
+    fi
+
+    echo
+    echo ">>> Step 4/5: Binary Hex Diff"
+    echo "------------------------------"
+    if command -v xxd &> /dev/null && command -v diff &> /dev/null; then
+        echo "Generating hexdump diff (this may take a while for large files)..."
+        xxd "$fw1" > "$diff_dir/hex_fw1.txt" 2>/dev/null &
+        local pid1=$!
+        xxd "$fw2" > "$diff_dir/hex_fw2.txt" 2>/dev/null &
+        local pid2=$!
+
+        wait $pid1 $pid2
+
+        diff -u "$diff_dir/hex_fw1.txt" "$diff_dir/hex_fw2.txt" > "$diff_dir/hex_diff.txt" 2>/dev/null || true
+
+        local diff_lines=$(wc -l < "$diff_dir/hex_diff.txt" 2>/dev/null || echo 0)
+        echo "  Hex diff generated: $diff_lines lines → $diff_dir/hex_diff.txt"
+
+        # Count changed bytes
+        local changed_bytes=$(grep -c '^[<>]' "$diff_dir/hex_diff.txt" 2>/dev/null || echo 0)
+        echo "  Approximate changed regions: $changed_bytes"
+    else
+        echo "WARNING: xxd or diff not available for hex comparison"
+    fi
+
+    echo
+    echo ">>> Step 5/5: Embedded File Comparison"
+    echo "---------------------------------------"
+    if command -v binwalk &> /dev/null; then
+        echo "Scanning for embedded files in both firmwares..."
+        binwalk "$fw1" > "$diff_dir/binwalk_fw1.txt" 2>&1
+        binwalk "$fw2" > "$diff_dir/binwalk_fw2.txt" 2>&1
+
+        echo "  Original embedded files:"
+        grep -c 'DECIMAL' "$diff_dir/binwalk_fw1.txt" 2>/dev/null || echo "  0"
+        echo "  Modified embedded files:"
+        grep -c 'DECIMAL' "$diff_dir/binwalk_fw2.txt" 2>/dev/null || echo "  0"
+        echo
+        echo "  See detailed binwalk output:"
+        echo "    $diff_dir/binwalk_fw1.txt"
+        echo "    $diff_dir/binwalk_fw2.txt"
+    else
+        echo "WARNING: binwalk not available"
+    fi
+
+    echo
+    echo "========================================="
+    echo "Binary Diff Complete!"
+    echo "========================================="
+    echo "All results saved to: $diff_dir"
+    echo
+
+    log_message "INFO" "Binary diff completed: $diff_dir"
+
+    read -r -p "Press Enter to continue..."
+}
+
+firmware_vulnerability_scan() {
+    print_header
+    echo "=== Firmware Vulnerability Scanner ==="
+    echo
+    echo "Scans firmware for common security issues:"
+    echo "  - Hardcoded credentials (passwords, keys, tokens)"
+    echo "  - Dangerous function calls (strcpy, gets, system)"
+    echo "  - Weak cryptographic algorithms (MD5, DES, RC4)"
+    echo "  - Common CVE patterns"
+    echo "  - Debug/backdoor strings"
+    echo "  - Private keys and certificates"
+    echo
+
+    read -r -p "Enter path to firmware file: " firmware_file
+
+    if [ ! -f "$firmware_file" ]; then
+        echo "ERROR: File not found: $firmware_file"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    local vuln_dir="${SESSION_DIR}/vulnscan_$(basename "$firmware_file")"
+    mkdir -p "$vuln_dir"
+
+    log_message "INFO" "Starting vulnerability scan: $firmware_file"
+
+    echo
+    echo ">>> Scan 1/7: Hardcoded Credentials"
+    echo "------------------------------------"
+    if command -v strings &> /dev/null; then
+        echo "Searching for credential patterns..."
+        local cred_file="$vuln_dir/credentials.txt"
+
+        strings "$firmware_file" | grep -Ei '(password|passwd|pwd|secret|api_key|apikey|token|auth.*=|key.*=)' > "$cred_file" 2>/dev/null || true
+
+        # Look for common default passwords
+        strings "$firmware_file" | grep -Ei '(admin|root|cisco|default|12345|password123)' >> "$cred_file" 2>/dev/null || true
+
+        local cred_count=$(sort -u "$cred_file" | wc -l 2>/dev/null || echo 0)
+        echo "  ALERT: Found $cred_count potential credential strings"
+
+        if [ "$cred_count" -gt 0 ]; then
+            echo "  Sample findings (first 15):"
+            sort -u "$cred_file" | head -15 | sed 's/^/    /'
+            echo "  → Full list: $cred_file"
+        fi
+    else
+        echo "WARNING: 'strings' command not available"
+    fi
+
+    echo
+    echo ">>> Scan 2/7: Dangerous Functions"
+    echo "----------------------------------"
+    if command -v strings &> /dev/null; then
+        echo "Searching for unsafe C functions..."
+        local unsafe_file="$vuln_dir/unsafe_functions.txt"
+
+        # Dangerous C functions
+        strings "$firmware_file" | grep -Eo '\b(strcpy|strcat|sprintf|gets|scanf|vsprintf|system|popen|exec|eval)\b' > "$unsafe_file" 2>/dev/null || true
+
+        local unsafe_count=$(sort -u "$unsafe_file" | wc -l 2>/dev/null || echo 0)
+
+        if [ "$unsafe_count" -gt 0 ]; then
+            echo "  WARNING: Found references to $unsafe_count dangerous functions:"
+            sort -u "$unsafe_file" | sed 's/^/    - /'
+            echo "  → $unsafe_file"
+        else
+            echo "  OK: No obvious dangerous function calls found"
+        fi
+    fi
+
+    echo
+    echo ">>> Scan 3/7: Weak Cryptography"
+    echo "--------------------------------"
+    if command -v strings &> /dev/null; then
+        echo "Searching for weak crypto algorithms..."
+        local crypto_file="$vuln_dir/weak_crypto.txt"
+
+        strings "$firmware_file" | grep -Ei '\b(MD5|DES|RC4|SHA1|md5|des|rc4|sha1)\b' > "$crypto_file" 2>/dev/null || true
+
+        local crypto_count=$(sort -u "$crypto_file" | wc -l 2>/dev/null || echo 0)
+
+        if [ "$crypto_count" -gt 0 ]; then
+            echo "  WARNING: Found $crypto_count references to weak crypto:"
+            sort -u "$crypto_file" | head -10 | sed 's/^/    /'
+            echo "  → $crypto_file"
+        else
+            echo "  OK: No obvious weak crypto references found"
+        fi
+    fi
+
+    echo
+    echo ">>> Scan 4/7: Private Keys & Certificates"
+    echo "------------------------------------------"
+    if command -v strings &> /dev/null; then
+        echo "Searching for embedded keys..."
+        local keys_file="$vuln_dir/private_keys.txt"
+
+        strings "$firmware_file" | grep -E '(BEGIN.*PRIVATE KEY|BEGIN RSA PRIVATE KEY|BEGIN DSA PRIVATE KEY|BEGIN EC PRIVATE KEY|BEGIN CERTIFICATE)' > "$keys_file" 2>/dev/null || true
+
+        local keys_count=$(wc -l < "$keys_file" 2>/dev/null || echo 0)
+
+        if [ "$keys_count" -gt 0 ]; then
+            echo "  CRITICAL: Found $keys_count embedded private keys/certificates!"
+            cat "$keys_file" | sed 's/^/    /'
+            echo "  → $keys_file"
+        else
+            echo "  OK: No PEM-formatted private keys found"
+        fi
+    fi
+
+    echo
+    echo ">>> Scan 5/7: Debug & Backdoor Strings"
+    echo "---------------------------------------"
+    if command -v strings &> /dev/null; then
+        echo "Searching for debug/backdoor indicators..."
+        local debug_file="$vuln_dir/debug_backdoor.txt"
+
+        strings "$firmware_file" | grep -Ei '(debug|backdoor|test.*mode|admin.*mode|root.*shell|hidden|secret.*menu)' > "$debug_file" 2>/dev/null || true
+
+        local debug_count=$(sort -u "$debug_file" | wc -l 2>/dev/null || echo 0)
+
+        if [ "$debug_count" -gt 0 ]; then
+            echo "  WARNING: Found $debug_count potential debug/backdoor strings"
+            echo "  Sample findings (first 10):"
+            sort -u "$debug_file" | head -10 | sed 's/^/    /'
+            echo "  → $debug_file"
+        else
+            echo "  OK: No obvious debug/backdoor strings found"
+        fi
+    fi
+
+    echo
+    echo ">>> Scan 6/7: SQL Injection Patterns"
+    echo "-------------------------------------"
+    if command -v strings &> /dev/null; then
+        echo "Searching for SQL query patterns..."
+        local sql_file="$vuln_dir/sql_patterns.txt"
+
+        strings "$firmware_file" | grep -Ei '(SELECT.*FROM|INSERT INTO|UPDATE.*SET|DELETE FROM|DROP TABLE|UNION SELECT)' > "$sql_file" 2>/dev/null || true
+
+        local sql_count=$(wc -l < "$sql_file" 2>/dev/null || echo 0)
+
+        if [ "$sql_count" -gt 0 ]; then
+            echo "  INFO: Found $sql_count SQL query strings"
+            echo "  Review for potential injection vulnerabilities"
+            echo "  → $sql_file"
+        else
+            echo "  OK: No SQL patterns detected"
+        fi
+    fi
+
+    echo
+    echo ">>> Scan 7/7: Common CVE Patterns"
+    echo "----------------------------------"
+    if command -v strings &> /dev/null; then
+        echo "Searching for known vulnerable components..."
+        local cve_file="$vuln_dir/cve_patterns.txt"
+
+        # Look for version strings of commonly vulnerable software
+        strings "$firmware_file" | grep -Ei '(openssl.*0\.|openssh.*[0-6]\.|busybox.*1\.1[0-9]\.|dropbear.*201[0-5])' > "$cve_file" 2>/dev/null || true
+
+        local cve_count=$(wc -l < "$cve_file" 2>/dev/null || echo 0)
+
+        if [ "$cve_count" -gt 0 ]; then
+            echo "  WARNING: Found $cve_count potentially outdated components:"
+            cat "$cve_file" | sed 's/^/    /'
+            echo "  → $cve_file"
+            echo "  NOTE: Verify versions and check CVE databases"
+        else
+            echo "  INFO: No obvious outdated component signatures found"
+        fi
+    fi
+
+    echo
+    echo "========================================="
+    echo "Vulnerability Scan Complete!"
+    echo "========================================="
+    echo "Results saved to: $vuln_dir"
+    echo
+    echo "SUMMARY OF FINDINGS:"
+    echo "  - Review all files in $vuln_dir"
+    echo "  - Pay special attention to private keys and hardcoded credentials"
+    echo "  - Verify any weak crypto usage"
+    echo "  - Check for unsafe functions in security-critical code"
+    echo
+
+    log_message "INFO" "Vulnerability scan completed: $vuln_dir"
+
+    read -r -p "Press Enter to continue..."
+}
+
+menu_firmware_analysis_suite() {
+    while true; do
+        print_header
+        echo "--- Advanced Firmware Analysis Suite ---"
+        echo
+        echo "  1) Automated Firmware Teardown"
+        echo "     (Comprehensive analysis: entropy, strings, functions, architecture)"
+        echo
+        echo "  2) Binary Firmware Differ"
+        echo "     (Compare two firmware versions for changes)"
+        echo
+        echo "  3) Vulnerability Scanner"
+        echo "     (Scan for hardcoded credentials, weak crypto, dangerous functions)"
+        echo
+        echo "  b) Back to Main Menu"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1) firmware_automated_teardown ;;
+            2) firmware_binary_diff ;;
+            3) firmware_vulnerability_scan ;;
+            b) break ;;
+            *) echo "Invalid option." && sleep 1 ;;
+        esac
+    done
+}
+
+# --- End Advanced Firmware Analysis Suite ---
+
+# --- Bootloader Development Kit ---
+
+bootloader_uboot_modifier() {
+    print_header
+    echo "=== U-Boot Bootloader Modifier ==="
+    echo
+    echo "Modify U-Boot bootloader images for custom configurations:"
+    echo "  - Patch environment variables"
+    echo "  - Modify boot commands"
+    echo "  - Change boot delays"
+    echo "  - Update network settings"
+    echo "  - Disable signature verification"
+    echo
+
+    read -r -p "Enter path to U-Boot image: " uboot_file
+
+    if [ ! -f "$uboot_file" ]; then
+        echo "ERROR: U-Boot file not found: $uboot_file"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    local modified_file="${uboot_file}.modified"
+    cp "$uboot_file" "$modified_file"
+
+    log_message "INFO" "Starting U-Boot modification: $uboot_file"
+
+    while true; do
+        print_header
+        echo "=== U-Boot Modifier - $(basename "$uboot_file") ==="
+        echo
+        echo "Modified file: $modified_file"
+        echo
+        echo "  1) Change Boot Delay"
+        echo "  2) Modify Boot Command (bootcmd)"
+        echo "  3) Patch Environment Variable"
+        echo "  4) Disable Signature Verification (NOP injection)"
+        echo "  5) Change Network Settings (IP/Server)"
+        echo "  6) Search for Strings in U-Boot"
+        echo "  7) View U-Boot Header Info"
+        echo "  8) Save and Exit"
+        echo "  b) Discard and Exit"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1)
+                echo
+                echo "--- Change Boot Delay ---"
+                echo "Current bootdelay strings in image:"
+                strings "$modified_file" | grep -i 'bootdelay' | head -5
+                echo
+                read -r -p "Enter new boot delay (seconds, e.g., 0 for instant boot): " new_delay
+
+                # Find and replace bootdelay= pattern
+                if command -v sed &> /dev/null; then
+                    # This is a simplified approach - in reality U-Boot env is more complex
+                    echo "Searching for bootdelay references..."
+
+                    # Create a hex pattern for bootdelay=X
+                    local search_pattern="bootdelay="
+                    local offsets=$(strings -t d "$modified_file" | grep 'bootdelay=' | awk '{print $1}')
+
+                    if [ -n "$offsets" ]; then
+                        echo "Found bootdelay at offsets: $offsets"
+                        echo "NOTE: Manual hex editing recommended for precise modification"
+                        echo "You can use: xxd -s <offset> $modified_file to verify"
+                    else
+                        echo "No bootdelay string found in binary"
+                    fi
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            2)
+                echo
+                echo "--- Modify Boot Command ---"
+                echo "Common boot commands found:"
+                strings "$modified_file" | grep -Ei '(bootcmd|boot|run)' | head -10
+                echo
+                read -r -p "Enter search string to replace: " search_str
+                read -r -p "Enter replacement string (same length or shorter): " replace_str
+
+                if command -v xxd &> /dev/null; then
+                    # Find offset of string
+                    local offset=$(strings -t d "$modified_file" | grep -F "$search_str" | head -1 | awk '{print $1}')
+
+                    if [ -n "$offset" ]; then
+                        echo "Found at offset: $offset (0x$(printf '%x' $offset))"
+
+                        # Pad replacement string if needed
+                        local search_len=${#search_str}
+                        local replace_len=${#replace_str}
+
+                        if [ $replace_len -le $search_len ]; then
+                            # Pad with nulls
+                            local padded_replace="$replace_str"
+                            while [ ${#padded_replace} -lt $search_len ]; do
+                                padded_replace="${padded_replace}\x00"
+                            done
+
+                            echo "Applying patch..."
+                            printf "%s" "$replace_str" | dd of="$modified_file" bs=1 seek="$offset" conv=notrunc 2>/dev/null
+
+                            # Null-pad the rest
+                            local pad_len=$((search_len - replace_len))
+                            if [ $pad_len -gt 0 ]; then
+                                dd if=/dev/zero of="$modified_file" bs=1 seek=$((offset + replace_len)) count=$pad_len conv=notrunc 2>/dev/null
+                            fi
+
+                            echo "SUCCESS: Patched bootcmd"
+                            log_message "INFO" "Modified U-Boot bootcmd: $search_str -> $replace_str"
+                        else
+                            echo "ERROR: Replacement string too long!"
+                        fi
+                    else
+                        echo "ERROR: String not found in image"
+                    fi
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            3)
+                echo
+                echo "--- Patch Environment Variable ---"
+                echo "Environment variables found:"
+                strings "$modified_file" | grep '=' | head -20
+                echo
+                read -r -p "Enter variable name (e.g., serverip): " var_name
+                read -r -p "Enter new value: " var_value
+
+                local search_pattern="${var_name}="
+                local replacement="${var_name}=${var_value}"
+
+                echo "Searching for ${search_pattern}..."
+                local offset=$(strings -t d "$modified_file" | grep -F "$search_pattern" | head -1 | awk '{print $1}')
+
+                if [ -n "$offset" ]; then
+                    echo "Found at offset: $offset"
+
+                    # Find the full current value
+                    local current_value=$(strings "$modified_file" | grep "^${search_pattern}" | head -1)
+                    local current_len=${#current_value}
+                    local new_len=${#replacement}
+
+                    if [ $new_len -le $current_len ]; then
+                        printf "%s" "$replacement" | dd of="$modified_file" bs=1 seek="$offset" conv=notrunc 2>/dev/null
+
+                        # Null-pad
+                        local pad_len=$((current_len - new_len))
+                        if [ $pad_len -gt 0 ]; then
+                            dd if=/dev/zero of="$modified_file" bs=1 seek=$((offset + new_len)) count=$pad_len conv=notrunc 2>/dev/null
+                        fi
+
+                        echo "SUCCESS: Modified $var_name"
+                        log_message "INFO" "Modified U-Boot env var: $var_name=$var_value"
+                    else
+                        echo "ERROR: New value too long (max: $current_len chars)"
+                    fi
+                else
+                    echo "ERROR: Variable $var_name not found"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            4)
+                echo
+                echo "--- Disable Signature Verification ---"
+                echo "WARNING: This will NOP out signature check functions"
+                echo "This may permanently modify bootloader security!"
+                echo
+                read -r -p "Enter function name to NOP (e.g., verify_signature): " func_name
+
+                echo "Searching for $func_name..."
+                local offset=$(strings -t d "$modified_file" | grep -F "$func_name" | head -1 | awk '{print $1}')
+
+                if [ -n "$offset" ]; then
+                    echo "Found reference at offset: $offset"
+                    echo "NOTE: This only NOPs the string reference, not the function code"
+                    echo "For ARM: Use 0x00 0x00 0xA0 0xE1 (NOP)"
+                    echo "For MIPS: Use 0x00 0x00 0x00 0x00 (NOP)"
+                    echo
+                    read -r -p "Enter NOP byte pattern (hex, e.g., 0000A0E1 for ARM): " nop_pattern
+                    read -r -p "Enter number of bytes to NOP: " nop_count
+
+                    # Convert hex pattern to binary
+                    echo "$nop_pattern" | xxd -r -p | dd of="$modified_file" bs=1 seek="$offset" count="$nop_count" conv=notrunc 2>/dev/null
+
+                    echo "SUCCESS: Applied NOP patch"
+                    log_message "INFO" "NOPped U-Boot function: $func_name at offset $offset"
+                else
+                    echo "ERROR: Function reference not found"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            5)
+                echo
+                echo "--- Change Network Settings ---"
+                echo "Current network-related strings:"
+                strings "$modified_file" | grep -Ei '(ipaddr|serverip|netmask|gateway)' | head -10
+                echo
+                echo "  1) Change IP Address (ipaddr)"
+                echo "  2) Change Server IP (serverip)"
+                echo "  3) Change Netmask"
+                echo "  4) Change Gateway"
+                echo
+                read -r -p "Choose setting to modify: " net_choice
+
+                local var_to_modify=""
+                case "$net_choice" in
+                    1) var_to_modify="ipaddr" ;;
+                    2) var_to_modify="serverip" ;;
+                    3) var_to_modify="netmask" ;;
+                    4) var_to_modify="gateway" ;;
+                    *) echo "Invalid choice" && sleep 1 && continue ;;
+                esac
+
+                read -r -p "Enter new $var_to_modify value: " new_ip
+
+                local search_pattern="${var_to_modify}="
+                local offset=$(strings -t d "$modified_file" | grep -F "$search_pattern" | head -1 | awk '{print $1}')
+
+                if [ -n "$offset" ]; then
+                    local current_value=$(strings "$modified_file" | grep "^${search_pattern}" | head -1)
+                    local current_len=${#current_value}
+                    local replacement="${var_to_modify}=${new_ip}"
+                    local new_len=${#replacement}
+
+                    if [ $new_len -le $current_len ]; then
+                        printf "%s" "$replacement" | dd of="$modified_file" bs=1 seek="$offset" conv=notrunc 2>/dev/null
+
+                        # Null-pad
+                        local pad_len=$((current_len - new_len))
+                        if [ $pad_len -gt 0 ]; then
+                            dd if=/dev/zero of="$modified_file" bs=1 seek=$((offset + new_len)) count=$pad_len conv=notrunc 2>/dev/null
+                        fi
+
+                        echo "SUCCESS: Modified $var_to_modify to $new_ip"
+                        log_message "INFO" "Modified U-Boot network: $var_to_modify=$new_ip"
+                    else
+                        echo "ERROR: New value too long"
+                    fi
+                else
+                    echo "ERROR: Variable $var_to_modify not found"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            6)
+                echo
+                echo "--- Search Strings in U-Boot ---"
+                read -r -p "Enter search pattern: " search_term
+                echo
+                echo "Results:"
+                strings -t d "$modified_file" | grep -i "$search_term"
+                echo
+                read -r -p "Press Enter to continue..."
+                ;;
+            7)
+                echo
+                echo "--- U-Boot Header Info ---"
+                if command -v file &> /dev/null; then
+                    file "$modified_file"
+                fi
+                echo
+                echo "File size: $(stat -c%s "$modified_file" 2>/dev/null || stat -f%z "$modified_file" 2>/dev/null) bytes"
+                echo
+                echo "Potential U-Boot version:"
+                strings "$modified_file" | grep -Ei '(U-Boot|version|build)' | head -10
+                echo
+                read -r -p "Press Enter to continue..."
+                ;;
+            8)
+                echo
+                echo "Modified U-Boot saved to: $modified_file"
+                log_message "INFO" "U-Boot modification completed: $modified_file"
+                read -r -p "Press Enter to continue..."
+                return 0
+                ;;
+            b)
+                echo "Discarding changes..."
+                rm -f "$modified_file"
+                return 0
+                ;;
+            *)
+                echo "Invalid option."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+bootloader_chain_builder() {
+    print_header
+    echo "=== Bootloader Chain Builder ==="
+    echo
+    echo "Create multi-stage bootloader configurations:"
+    echo "  - Build bootloader chains (Stage1 -> Stage2 -> Kernel)"
+    echo "  - Configure load addresses and entry points"
+    echo "  - Generate boot scripts"
+    echo "  - Create combined bootloader images"
+    echo
+
+    local chain_dir="${SESSION_DIR}/bootloader_chain_$(date +%s)"
+    mkdir -p "$chain_dir"
+
+    log_message "INFO" "Starting bootloader chain builder: $chain_dir"
+
+    while true; do
+        print_header
+        echo "=== Bootloader Chain Builder ==="
+        echo
+        echo "Chain directory: $chain_dir"
+        echo
+        echo "  1) Define Stage 1 Bootloader (Primary)"
+        echo "  2) Define Stage 2 Bootloader (Secondary)"
+        echo "  3) Define Kernel/Firmware"
+        echo "  4) Set Load Addresses & Entry Points"
+        echo "  5) Generate U-Boot Script"
+        echo "  6) Create Combined Image"
+        echo "  7) View Current Configuration"
+        echo "  8) Export Configuration"
+        echo "  b) Back"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1)
+                echo
+                echo "--- Define Stage 1 Bootloader ---"
+                read -r -p "Enter path to Stage 1 bootloader: " stage1_file
+
+                if [ ! -f "$stage1_file" ]; then
+                    echo "ERROR: File not found: $stage1_file"
+                else
+                    cp "$stage1_file" "$chain_dir/stage1.bin"
+                    local stage1_size=$(stat -c%s "$chain_dir/stage1.bin" 2>/dev/null || stat -f%z "$chain_dir/stage1.bin" 2>/dev/null)
+                    echo "stage1_file=$stage1_file" > "$chain_dir/config.txt"
+                    echo "stage1_size=$stage1_size" >> "$chain_dir/config.txt"
+                    echo "SUCCESS: Stage 1 configured ($stage1_size bytes)"
+                    log_message "INFO" "Stage 1 bootloader set: $stage1_file"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            2)
+                echo
+                echo "--- Define Stage 2 Bootloader ---"
+                read -r -p "Enter path to Stage 2 bootloader (U-Boot, etc.): " stage2_file
+
+                if [ ! -f "$stage2_file" ]; then
+                    echo "ERROR: File not found: $stage2_file"
+                else
+                    cp "$stage2_file" "$chain_dir/stage2.bin"
+                    local stage2_size=$(stat -c%s "$chain_dir/stage2.bin" 2>/dev/null || stat -f%z "$chain_dir/stage2.bin" 2>/dev/null)
+                    echo "stage2_file=$stage2_file" >> "$chain_dir/config.txt"
+                    echo "stage2_size=$stage2_size" >> "$chain_dir/config.txt"
+                    echo "SUCCESS: Stage 2 configured ($stage2_size bytes)"
+                    log_message "INFO" "Stage 2 bootloader set: $stage2_file"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            3)
+                echo
+                echo "--- Define Kernel/Firmware ---"
+                read -r -p "Enter path to kernel/firmware: " kernel_file
+
+                if [ ! -f "$kernel_file" ]; then
+                    echo "ERROR: File not found: $kernel_file"
+                else
+                    cp "$kernel_file" "$chain_dir/kernel.bin"
+                    local kernel_size=$(stat -c%s "$chain_dir/kernel.bin" 2>/dev/null || stat -f%z "$chain_dir/kernel.bin" 2>/dev/null)
+                    echo "kernel_file=$kernel_file" >> "$chain_dir/config.txt"
+                    echo "kernel_size=$kernel_size" >> "$chain_dir/config.txt"
+                    echo "SUCCESS: Kernel configured ($kernel_size bytes)"
+                    log_message "INFO" "Kernel set: $kernel_file"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            4)
+                echo
+                echo "--- Set Load Addresses & Entry Points ---"
+                echo "Note: Addresses should be in hex format (e.g., 0x80000000)"
+                echo
+                read -r -p "Stage 1 load address (hex): " stage1_load
+                read -r -p "Stage 2 load address (hex): " stage2_load
+                read -r -p "Kernel load address (hex): " kernel_load
+                read -r -p "Kernel entry point (hex): " kernel_entry
+
+                echo "stage1_load_addr=$stage1_load" >> "$chain_dir/config.txt"
+                echo "stage2_load_addr=$stage2_load" >> "$chain_dir/config.txt"
+                echo "kernel_load_addr=$kernel_load" >> "$chain_dir/config.txt"
+                echo "kernel_entry_point=$kernel_entry" >> "$chain_dir/config.txt"
+
+                echo "SUCCESS: Addresses configured"
+                log_message "INFO" "Bootloader addresses configured"
+                read -r -p "Press Enter to continue..."
+                ;;
+            5)
+                echo
+                echo "--- Generate U-Boot Script ---"
+
+                if [ ! -f "$chain_dir/config.txt" ]; then
+                    echo "ERROR: No configuration found. Define stages first."
+                    read -r -p "Press Enter to continue..."
+                    continue
+                fi
+
+                # Source the config
+                source "$chain_dir/config.txt" 2>/dev/null || true
+
+                local script_file="$chain_dir/boot.scr.txt"
+
+                cat > "$script_file" <<EOF
+# Auto-generated U-Boot boot script
+# Generated by Cisco Recovery Tool - Bootloader Chain Builder
+# $(date)
+
+echo "=== Multi-Stage Boot Sequence ==="
+
+# Stage 1: Load initial bootloader
+echo "Loading Stage 1 Bootloader..."
+# Assuming Stage 1 is already in place (ROM/Flash)
+
+# Stage 2: Load U-Boot or secondary bootloader
+echo "Loading Stage 2 Bootloader..."
+EOF
+
+                if [ -n "$stage2_load_addr" ]; then
+                    echo "fatload mmc 0:1 $stage2_load_addr stage2.bin" >> "$script_file"
+                    echo "go $stage2_load_addr" >> "$script_file"
+                fi
+
+                cat >> "$script_file" <<EOF
+
+# Stage 3: Load kernel
+echo "Loading Kernel..."
+EOF
+
+                if [ -n "$kernel_load_addr" ] && [ -n "$kernel_entry_point" ]; then
+                    echo "fatload mmc 0:1 $kernel_load_addr kernel.bin" >> "$script_file"
+                    echo "bootm $kernel_entry_point" >> "$script_file"
+                fi
+
+                echo "" >> "$script_file"
+                echo "echo \"Boot sequence complete\"" >> "$script_file"
+
+                echo "SUCCESS: Boot script generated at $script_file"
+                echo
+                echo "Script contents:"
+                cat "$script_file"
+                echo
+
+                # Compile script if mkimage is available
+                if command -v mkimage &> /dev/null; then
+                    echo "Compiling U-Boot script..."
+                    mkimage -A arm -T script -C none -n "Boot Script" -d "$script_file" "$chain_dir/boot.scr" 2>&1
+                    if [ $? -eq 0 ]; then
+                        echo "SUCCESS: Compiled script: $chain_dir/boot.scr"
+                    fi
+                else
+                    echo "NOTE: mkimage not available - script not compiled"
+                    echo "Install u-boot-tools to compile the script"
+                fi
+
+                log_message "INFO" "Generated boot script: $script_file"
+                read -r -p "Press Enter to continue..."
+                ;;
+            6)
+                echo
+                echo "--- Create Combined Image ---"
+
+                if [ ! -f "$chain_dir/stage1.bin" ]; then
+                    echo "ERROR: Stage 1 not defined"
+                    read -r -p "Press Enter to continue..."
+                    continue
+                fi
+
+                local combined_file="$chain_dir/combined_bootloader.bin"
+
+                echo "Creating combined bootloader image..."
+
+                # Start with stage1
+                cat "$chain_dir/stage1.bin" > "$combined_file"
+
+                # Pad to 64KB boundary if stage2 exists
+                if [ -f "$chain_dir/stage2.bin" ]; then
+                    local current_size=$(stat -c%s "$combined_file" 2>/dev/null || stat -f%z "$combined_file" 2>/dev/null)
+                    local pad_to=65536  # 64KB
+                    local pad_bytes=$((pad_to - current_size))
+
+                    if [ $pad_bytes -gt 0 ]; then
+                        echo "Padding stage 1 to ${pad_to} bytes..."
+                        dd if=/dev/zero bs=1 count=$pad_bytes >> "$combined_file" 2>/dev/null
+                    fi
+
+                    # Append stage2
+                    echo "Appending stage 2..."
+                    cat "$chain_dir/stage2.bin" >> "$combined_file"
+                fi
+
+                # Pad to 1MB boundary if kernel exists
+                if [ -f "$chain_dir/kernel.bin" ]; then
+                    local current_size=$(stat -c%s "$combined_file" 2>/dev/null || stat -f%z "$combined_file" 2>/dev/null)
+                    local pad_to=1048576  # 1MB
+                    local pad_bytes=$((pad_to - current_size))
+
+                    if [ $pad_bytes -gt 0 ]; then
+                        echo "Padding bootloaders to ${pad_to} bytes..."
+                        dd if=/dev/zero bs=1 count=$pad_bytes >> "$combined_file" 2>/dev/null
+                    fi
+
+                    # Append kernel
+                    echo "Appending kernel..."
+                    cat "$chain_dir/kernel.bin" >> "$combined_file"
+                fi
+
+                local final_size=$(stat -c%s "$combined_file" 2>/dev/null || stat -f%z "$combined_file" 2>/dev/null)
+
+                echo
+                echo "========================================="
+                echo "SUCCESS: Combined image created!"
+                echo "========================================="
+                echo "File: $combined_file"
+                echo "Size: $final_size bytes ($((final_size / 1024)) KB)"
+                echo
+                echo "This image can be flashed via JTAG or written to storage device"
+
+                log_message "INFO" "Created combined bootloader image: $combined_file ($final_size bytes)"
+                read -r -p "Press Enter to continue..."
+                ;;
+            7)
+                echo
+                echo "--- Current Configuration ---"
+                if [ -f "$chain_dir/config.txt" ]; then
+                    cat "$chain_dir/config.txt"
+                else
+                    echo "No configuration found"
+                fi
+                echo
+                echo "Files in chain directory:"
+                ls -lh "$chain_dir/" 2>/dev/null || echo "Empty"
+                echo
+                read -r -p "Press Enter to continue..."
+                ;;
+            8)
+                echo
+                echo "--- Export Configuration ---"
+                read -r -p "Enter export directory path: " export_dir
+
+                if [ ! -d "$export_dir" ]; then
+                    mkdir -p "$export_dir" 2>/dev/null
+                fi
+
+                if [ -d "$export_dir" ]; then
+                    cp -r "$chain_dir"/* "$export_dir/" 2>/dev/null
+                    echo "SUCCESS: Configuration exported to $export_dir"
+                    log_message "INFO" "Exported bootloader chain to: $export_dir"
+                else
+                    echo "ERROR: Cannot create export directory"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            b)
+                echo "Bootloader chain configuration saved in: $chain_dir"
+                return 0
+                ;;
+            *)
+                echo "Invalid option."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+menu_bootloader_devkit() {
+    while true; do
+        print_header
+        echo "--- Bootloader Development Kit ---"
+        echo
+        echo "  1) U-Boot Modifier"
+        echo "     (Patch U-Boot environment, boot commands, network settings)"
+        echo
+        echo "  2) Bootloader Chain Builder"
+        echo "     (Create multi-stage bootloader configurations)"
+        echo
+        echo "  b) Back to Main Menu"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1) bootloader_uboot_modifier ;;
+            2) bootloader_chain_builder ;;
+            b) break ;;
+            *) echo "Invalid option." && sleep 1 ;;
+        esac
+    done
+}
+
+# --- End Bootloader Development Kit ---
+
 menu_set_architecture() {
     while true; do
         print_header
@@ -588,8 +3442,12 @@ main_menu() {
         echo "  1) Platform and JTAG Configuration"
         echo "  2) Cisco Password Recovery"
         echo "  3) JTAG Exploitation"
-        echo "  4) Memory Analysis"
-        echo "  5) Firmware Manipulation"
+        echo "  4) JTAG Cable Assisted Recovery"
+        echo "  5) Firmware Modification Workshop"
+        echo "  6) Advanced Firmware Analysis Suite"
+        echo "  7) Bootloader Development Kit"
+        echo "  8) Memory Analysis"
+        echo "  9) Firmware Manipulation"
         echo "  b) Exit"
         echo
         read -r -p "Choose an option: " choice
@@ -598,8 +3456,12 @@ main_menu() {
             1) menu_platform_jtag_config ;;
             2) menu_password_recovery ;;
             3) menu_jtag_exploitation ;;
-            4) menu_memory_analysis ;;
-            5) menu_firmware_manipulation ;;
+            4) menu_jtag_cable_recovery ;;
+            5) menu_firmware_workshop ;;
+            6) menu_firmware_analysis_suite ;;
+            7) menu_bootloader_devkit ;;
+            8) menu_memory_analysis ;;
+            9) menu_firmware_manipulation ;;
             b) break ;;
             *) echo "Invalid option. Please try again." && sleep 1 ;;
         esac
