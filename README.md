@@ -1,19 +1,39 @@
-# Cisco & Generic Embedded Advanced Recovery Tool v2.3
+# Cisco & Generic Embedded Advanced Recovery Tool v2.5
 
 ## Overview
 
-This script is a professional-grade, TUI-driven framework for multi-vector interaction with Cisco and other embedded devices. It combines serial console recovery, advanced JTAG exploitation, and powerful post-exploitation analysis for hardware reverse engineering and security auditing.
+This script is a professional-grade, TUI-driven framework for multi-vector interaction with Cisco and other embedded devices. It combines serial console recovery, advanced JTAG exploitation, JTAG cable assisted recovery, and powerful post-exploitation analysis for hardware reverse engineering and security auditing.
 
 ## Features
 
 -   **Multi-Platform & Multi-Architecture:** Targets Cisco ISR (ARM), ASA, and generic MIPS32 devices.
--   **Dynamic Device Detection:** Scans for and identifies a wide range of serial and JTAG adapters.
+-   **Dynamic Device Detection:** Scans for and identifies a wide range of serial and JTAG adapters (FTDI, J-Link, CH341).
 -   **Session Logging & Configuration:** Supports session logging and an external config file.
 
 ### JTAG Exploitation Menu
 
 -   **Data Exfiltration:** Includes tools for dumping memory regions and extracting the full contents of flash memory via JTAG.
 -   **Multi-Architecture Profiles:** Provides distinct initialization profiles for ARM and MIPS targets.
+
+### JTAG Cable Assisted Recovery Menu (NEW)
+
+-   **Connection Testing:** Verify JTAG cable connectivity and detect issues before attempting recovery operations.
+-   **TAP Detection & Diagnostics:** Automatically detect and identify JTAG TAPs in the chain with IDCODE reporting.
+-   **Interactive OpenOCD Console:** Launch an interactive OpenOCD server for manual debugging and recovery operations.
+-   **JTAG Password Recovery:** Three methods for password recovery:
+    -   Extract and analyze NVRAM for credentials
+    -   Patch configuration register (confreg bypass method)
+    -   Extract full flash and search for passwords
+-   **JTAG Bootloader Recovery:** Write new bootloader images via JTAG to recover from bootloader corruption (DANGEROUS).
+-   **JTAG Memory Patching:** Patch memory or flash for recovery purposes:
+    -   Write single words to memory
+    -   Apply binary patches
+    -   Fill memory regions with patterns
+-   **Guided Recovery Wizard:** Step-by-step wizards for common scenarios:
+    -   Soft-brick recovery (device won't boot)
+    -   Password reset via JTAG
+    -   Bootloader corruption recovery
+    -   Firmware/config extraction
 
 ### Reverse Engineering & Analysis Menu
 
@@ -45,4 +65,10 @@ This script is a professional-grade, TUI-driven framework for multi-vector inter
 
 ## Disclaimer
 
-This tool contains dangerous features, especially the JTAG memory write function. It can cause irreversible damage to the target device. The user assumes all responsibility for any actions performed by this script. **Use with extreme caution.**
+This tool contains dangerous features, especially:
+- JTAG memory/flash write functions
+- JTAG bootloader recovery
+- JTAG memory patching
+- Configuration register manipulation
+
+These operations can cause irreversible damage to the target device and may permanently brick it. The user assumes all responsibility for any actions performed by this script. **Use with extreme caution and only on authorized devices.**

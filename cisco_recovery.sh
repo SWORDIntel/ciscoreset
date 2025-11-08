@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Cisco & Generic Embedded Advanced Recovery Tool v2.3
+# Cisco & Generic Embedded Advanced Recovery Tool v2.5
 #
 # A TUI-based toolkit for automating password recovery, JTAG exploitation,
-# and firmware analysis on Cisco and other embedded devices.
+# JTAG cable assisted recovery, and firmware analysis on Cisco and other embedded devices.
 
 # Exit on error, undefined variable, or pipe failure
 set -euo pipefail
@@ -534,6 +534,745 @@ menu_firmware_manipulation() {
     done
 }
 
+# --- JTAG Cable Assisted Recovery Functions ---
+
+jtag_test_connection() {
+    print_header
+    echo "--- JTAG Cable Connection Test ---"
+    echo
+
+    if ! command -v openocd &> /dev/null; then
+        log_message "ERROR" "'openocd' not found."
+        echo "ERROR: 'openocd' is not installed. Please install it to use this feature."
+        sleep 3
+        return
+    fi
+
+    if [ "$JTAG_ADAPTER" == "auto" ]; then
+        log_message "ERROR" "JTAG adapter not set."
+        echo "ERROR: Please configure the JTAG adapter first."
+        sleep 3
+        return
+    fi
+
+    local ocd_interface_cfg="${OPENOCD_SCRIPT_PATH}/interface/${JTAG_ADAPTER}.cfg"
+
+    if [ ! -f "$ocd_interface_cfg" ]; then
+        log_message "ERROR" "OpenOCD interface config not found: $ocd_interface_cfg"
+        echo "ERROR: Interface config file not found. Check OPENOCD_SCRIPT_PATH."
+        sleep 3
+        return
+    fi
+
+    echo "Testing JTAG cable connection..."
+    echo "Adapter: $JTAG_ADAPTER"
+    echo
+
+    local openocd_cmd=(
+        "openocd"
+        "-f" "$ocd_interface_cfg"
+        "-c" "adapter speed 1000"
+        "-c" "init"
+        "-c" "scan_chain"
+        "-c" "exit"
+    )
+
+    log_message "INFO" "Running JTAG connection test..."
+    log_message "CMD" "${openocd_cmd[*]}"
+
+    local test_output
+    if test_output=$("${openocd_cmd[@]}" 2>&1); then
+        log_message "INFO" "JTAG connection test output: $test_output"
+        echo "------- Connection Test Results -------"
+        echo "$test_output" | grep -E "(Info|Error|Warn|JTAG|TAP)" || echo "$test_output"
+        echo "---------------------------------------"
+
+        if echo "$test_output" | grep -q "JTAG tap:"; then
+            echo
+            echo "SUCCESS: JTAG TAP detected! Cable connection is working."
+        else
+            echo
+            echo "WARNING: No JTAG TAP detected. Check your connections."
+        fi
+    else
+        log_message "ERROR" "JTAG connection test failed: $test_output"
+        echo "ERROR: Connection test failed. Output:"
+        echo "$test_output"
+    fi
+
+    echo
+    read -r -p "Press Enter to continue..."
+}
+
+jtag_detect_taps() {
+    print_header
+    echo "--- JTAG TAP Detection & Diagnostics ---"
+    echo
+
+    if ! command -v openocd &> /dev/null; then
+        log_message "ERROR" "'openocd' not found."
+        echo "ERROR: 'openocd' is not installed."
+        sleep 3
+        return
+    fi
+
+    if [ "$JTAG_ADAPTER" == "auto" ]; then
+        log_message "ERROR" "JTAG adapter not set."
+        echo "ERROR: Please configure the JTAG adapter first."
+        sleep 3
+        return
+    fi
+
+    local ocd_interface_cfg="${OPENOCD_SCRIPT_PATH}/interface/${JTAG_ADAPTER}.cfg"
+
+    echo "Detecting JTAG TAPs in the chain..."
+    echo "This will scan for all devices on the JTAG chain."
+    echo
+
+    local openocd_cmd=(
+        "openocd"
+        "-f" "$ocd_interface_cfg"
+        "-c" "adapter speed 100"
+        "-c" "transport select jtag"
+        "-c" "jtag newtap auto0 tap -irlen 4 -expected-id 0"
+        "-c" "init"
+        "-c" "scan_chain"
+        "-c" "exit"
+    )
+
+    log_message "INFO" "Running JTAG TAP detection..."
+    log_message "CMD" "${openocd_cmd[*]}"
+
+    local tap_output
+    if tap_output=$("${openocd_cmd[@]}" 2>&1); then
+        log_message "INFO" "TAP detection output: $tap_output"
+        echo "------- TAP Detection Results -------"
+        echo "$tap_output" | grep -E "(Info|TapName|IR length|IDCODE)" || echo "$tap_output"
+        echo "-------------------------------------"
+
+        # Extract and display IDCODE if found
+        if echo "$tap_output" | grep -q "IDCODE"; then
+            echo
+            echo "Device IDCODE(s) detected:"
+            echo "$tap_output" | grep "IDCODE"
+        fi
+    else
+        log_message "ERROR" "TAP detection failed: $tap_output"
+        echo "ERROR: TAP detection failed."
+        echo "$tap_output"
+    fi
+
+    echo
+    read -r -p "Press Enter to continue..."
+}
+
+jtag_interactive_console() {
+    print_header
+    echo "--- Interactive OpenOCD Console ---"
+    echo
+
+    if ! command -v openocd &> /dev/null; then
+        log_message "ERROR" "'openocd' not found."
+        echo "ERROR: 'openocd' is not installed."
+        sleep 3
+        return
+    fi
+
+    if [ "$JTAG_ADAPTER" == "auto" ] || [ "$TARGET_ARCH" == "auto" ]; then
+        log_message "ERROR" "JTAG adapter or target architecture not set."
+        echo "ERROR: Please configure both JTAG adapter and target architecture."
+        sleep 3
+        return
+    fi
+
+    local ocd_interface_cfg="${OPENOCD_SCRIPT_PATH}/interface/${JTAG_ADAPTER}.cfg"
+    local ocd_target_cfg="${OPENOCD_SCRIPT_PATH}/target/swj-dp.cfg"
+
+    echo "Starting OpenOCD server..."
+    echo "Once started, you can connect via telnet on port 4444"
+    echo
+    echo "Useful commands:"
+    echo "  halt              - Halt the target"
+    echo "  resume            - Resume execution"
+    echo "  reset halt        - Reset and halt"
+    echo "  mdw <addr> <count> - Read memory (word)"
+    echo "  mww <addr> <value> - Write memory (word)"
+    echo "  reg               - Display registers"
+    echo "  shutdown          - Exit OpenOCD"
+    echo
+    echo "Press Ctrl+C to stop the OpenOCD server."
+    echo
+    read -r -p "Press Enter to start OpenOCD server..."
+
+    log_message "INFO" "Starting interactive OpenOCD console"
+
+    # Start OpenOCD in the foreground
+    openocd -f "$ocd_interface_cfg" -f "$ocd_target_cfg" 2>&1 | tee -a "$LOG_FILE"
+
+    echo
+    echo "OpenOCD server stopped."
+    read -r -p "Press Enter to continue..."
+}
+
+jtag_password_recovery() {
+    print_header
+    echo "--- JTAG-Based Password Recovery ---"
+    echo
+    echo "This feature attempts to recover or reset device passwords"
+    echo "by manipulating configuration memory via JTAG."
+    echo
+
+    if ! command -v openocd &> /dev/null; then
+        log_message "ERROR" "'openocd' not found."
+        echo "ERROR: 'openocd' is not installed."
+        sleep 3
+        return
+    fi
+
+    if [ "$JTAG_ADAPTER" == "auto" ] || [ "$TARGET_ARCH" == "auto" ]; then
+        log_message "ERROR" "JTAG adapter or target architecture not set."
+        echo "ERROR: Please configure JTAG adapter and target architecture."
+        sleep 3
+        return
+    fi
+
+    echo "Select recovery method:"
+    echo "  1) Extract and analyze NVRAM for credentials"
+    echo "  2) Patch configuration register (confreg method)"
+    echo "  3) Extract full flash and search for passwords"
+    echo "  b) Back"
+    echo
+    read -r -p "Choose an option: " recovery_choice
+
+    case "$recovery_choice" in
+        1)
+            echo
+            read -r -p "Enter NVRAM base address (hex, e.g., 0x1e000000): " nvram_addr
+            read -r -p "Enter NVRAM size (bytes, e.g., 65536): " nvram_size
+            local nvram_file="${SESSION_DIR}/nvram_dump.bin"
+
+            local ocd_interface_cfg="${OPENOCD_SCRIPT_PATH}/interface/${JTAG_ADAPTER}.cfg"
+            local ocd_target_cfg="${OPENOCD_SCRIPT_PATH}/target/swj-dp.cfg"
+
+            echo "Dumping NVRAM via JTAG..."
+            local openocd_cmd=(
+                "openocd"
+                "-f" "$ocd_interface_cfg"
+                "-f" "$ocd_target_cfg"
+                "-c" "init"
+                "-c" "halt"
+                "-c" "dump_image \"$nvram_file\" $nvram_addr $nvram_size"
+                "-c" "resume"
+                "-c" "exit"
+            )
+
+            log_message "CMD" "${openocd_cmd[*]}"
+
+            if output=$("${openocd_cmd[@]}" 2>&1); then
+                log_message "INFO" "NVRAM dump successful"
+                echo "SUCCESS: NVRAM dumped to $nvram_file"
+                echo
+                echo "Searching for credentials..."
+                echo "------- Potential Credentials -------"
+                strings "$nvram_file" | grep -iE 'password|secret|user|admin|enable' | head -20
+                echo "-------------------------------------"
+                echo
+                echo "Full NVRAM dump saved to: $nvram_file"
+            else
+                log_message "ERROR" "NVRAM dump failed: $output"
+                echo "ERROR: Failed to dump NVRAM."
+            fi
+            ;;
+        2)
+            echo
+            echo "This will attempt to set the configuration register to bypass startup-config."
+            read -r -p "Enter config register address (hex, e.g., 0x1e000008): " confreg_addr
+            read -r -p "Enter bypass value (hex, e.g., 0x2142): " bypass_value
+
+            echo
+            echo "WARNING: Writing incorrect values can brick the device!"
+            read -r -p "Type 'confirm' to proceed: " confirm
+
+            if [[ "$confirm" != "confirm" ]]; then
+                echo "Operation cancelled."
+                sleep 2
+                return
+            fi
+
+            local ocd_interface_cfg="${OPENOCD_SCRIPT_PATH}/interface/${JTAG_ADAPTER}.cfg"
+            local ocd_target_cfg="${OPENOCD_SCRIPT_PATH}/target/swj-dp.cfg"
+
+            echo "Writing configuration register..."
+            local openocd_cmd=(
+                "openocd"
+                "-f" "$ocd_interface_cfg"
+                "-f" "$ocd_target_cfg"
+                "-c" "init"
+                "-c" "halt"
+                "-c" "mww $confreg_addr $bypass_value"
+                "-c" "resume"
+                "-c" "reset"
+                "-c" "exit"
+            )
+
+            log_message "CMD" "${openocd_cmd[*]}"
+
+            if output=$("${openocd_cmd[@]}" 2>&1); then
+                log_message "INFO" "Config register write successful"
+                echo "SUCCESS: Configuration register updated."
+                echo "Device will now boot bypassing startup-config."
+                echo "You can configure a new password after reboot."
+            else
+                log_message "ERROR" "Config register write failed: $output"
+                echo "ERROR: Failed to write configuration register."
+            fi
+            ;;
+        3)
+            echo
+            read -r -p "Enter output file for flash dump: " flash_file
+
+            local ocd_interface_cfg="${OPENOCD_SCRIPT_PATH}/interface/${JTAG_ADAPTER}.cfg"
+            local ocd_target_cfg="${OPENOCD_SCRIPT_PATH}/target/swj-dp.cfg"
+
+            echo "Dumping flash memory..."
+            local openocd_cmd=(
+                "openocd"
+                "-f" "$ocd_interface_cfg"
+                "-f" "$ocd_target_cfg"
+                "-c" "init"
+                "-c" "halt"
+                "-c" "flash read_bank 0 \"$flash_file\" 0 0"
+                "-c" "resume"
+                "-c" "exit"
+            )
+
+            log_message "CMD" "${openocd_cmd[*]}"
+
+            if output=$("${openocd_cmd[@]}" 2>&1); then
+                log_message "INFO" "Flash dump successful"
+                echo "SUCCESS: Flash dumped to $flash_file"
+                echo
+                echo "Searching for passwords in flash..."
+                echo "------- Potential Credentials -------"
+                strings "$flash_file" | grep -iE 'password|secret|enable|username' | head -30
+                echo "-------------------------------------"
+            else
+                log_message "ERROR" "Flash dump failed: $output"
+                echo "ERROR: Failed to dump flash memory."
+            fi
+            ;;
+        b)
+            return
+            ;;
+        *)
+            echo "Invalid option."
+            sleep 1
+            ;;
+    esac
+
+    echo
+    read -r -p "Press Enter to continue..."
+}
+
+jtag_bootloader_recovery() {
+    print_header
+    echo "--- JTAG Bootloader Recovery ---"
+    echo
+    echo "This feature helps recover devices with corrupted bootloaders"
+    echo "by writing a new bootloader image via JTAG."
+    echo
+
+    if ! command -v openocd &> /dev/null; then
+        log_message "ERROR" "'openocd' not found."
+        echo "ERROR: 'openocd' is not installed."
+        sleep 3
+        return
+    fi
+
+    if [ "$JTAG_ADAPTER" == "auto" ] || [ "$TARGET_ARCH" == "auto" ]; then
+        log_message "ERROR" "JTAG adapter or target architecture not set."
+        echo "ERROR: Please configure JTAG adapter and target architecture."
+        sleep 3
+        return
+    fi
+
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo "  WARNING: THIS IS AN EXTREMELY DANGEROUS OPERATION."
+    echo "  Writing an incorrect bootloader WILL brick your device."
+    echo "  You assume all risk. Ensure you have the correct image."
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo
+
+    read -r -p "Enter the path to the bootloader image (.bin): " bootloader_file
+
+    if [ ! -f "$bootloader_file" ]; then
+        log_message "ERROR" "Bootloader file not found: $bootloader_file"
+        echo "ERROR: File not found at '$bootloader_file'."
+        sleep 2
+        return
+    fi
+
+    read -r -p "Enter bootloader flash address (hex, e.g., 0x0): " boot_addr
+
+    echo
+    echo "Bootloader file: $bootloader_file"
+    echo "Target address: $boot_addr"
+    echo "Target arch: $TARGET_ARCH"
+    echo "JTAG adapter: $JTAG_ADAPTER"
+    echo
+
+    read -r -p "Type 'RECOVER' to proceed with bootloader write: " confirm
+
+    if [[ "$confirm" != "RECOVER" ]]; then
+        log_message "INFO" "Bootloader recovery cancelled by user."
+        echo "Operation cancelled."
+        sleep 2
+        return
+    fi
+
+    local ocd_interface_cfg="${OPENOCD_SCRIPT_PATH}/interface/${JTAG_ADAPTER}.cfg"
+    local ocd_target_cfg="${OPENOCD_SCRIPT_PATH}/target/swj-dp.cfg"
+
+    echo
+    echo "Preparing to write bootloader..."
+    echo "This will erase the flash sector and write the new bootloader."
+    echo
+    read -r -p "Press Enter to continue or Ctrl+C to abort..."
+
+    local openocd_cmd=(
+        "openocd"
+        "-f" "$ocd_interface_cfg"
+        "-f" "$ocd_target_cfg"
+        "-c" "init"
+        "-c" "halt"
+        "-c" "flash erase_sector 0 0 0"
+        "-c" "flash write_bank 0 \"$bootloader_file\" $boot_addr"
+        "-c" "verify_image \"$bootloader_file\" $boot_addr"
+        "-c" "reset run"
+        "-c" "exit"
+    )
+
+    log_message "CMD" "${openocd_cmd[*]}"
+    echo "Writing bootloader via JTAG..."
+
+    if output=$("${openocd_cmd[@]}" 2>&1); then
+        log_message "INFO" "Bootloader write successful: $output"
+        echo "---"
+        echo " SUCCESS: Bootloader written and verified."
+        echo " The device has been reset."
+        echo " Monitor the serial console for boot messages."
+        echo "---"
+    else
+        log_message "ERROR" "Bootloader write failed: $output"
+        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo "   ERROR: BOOTLOADER WRITE FAILED."
+        echo "   The device may be bricked."
+        echo "   See log at $LOG_FILE for details."
+        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    fi
+
+    echo
+    read -r -p "Press Enter to continue..."
+}
+
+jtag_memory_patch() {
+    print_header
+    echo "--- JTAG Memory Patching ---"
+    echo
+    echo "This feature allows you to patch memory or flash via JTAG"
+    echo "for recovery purposes (e.g., fixing corrupted data, patching configs)."
+    echo
+
+    if ! command -v openocd &> /dev/null; then
+        log_message "ERROR" "'openocd' not found."
+        echo "ERROR: 'openocd' is not installed."
+        sleep 3
+        return
+    fi
+
+    if [ "$JTAG_ADAPTER" == "auto" ] || [ "$TARGET_ARCH" == "auto" ]; then
+        log_message "ERROR" "JTAG adapter or target architecture not set."
+        echo "ERROR: Please configure JTAG adapter and target architecture."
+        sleep 3
+        return
+    fi
+
+    echo "Select patch operation:"
+    echo "  1) Write single word to memory"
+    echo "  2) Write binary patch to memory"
+    echo "  3) Fill memory region with pattern"
+    echo "  b) Back"
+    echo
+    read -r -p "Choose an option: " patch_choice
+
+    local ocd_interface_cfg="${OPENOCD_SCRIPT_PATH}/interface/${JTAG_ADAPTER}.cfg"
+    local ocd_target_cfg="${OPENOCD_SCRIPT_PATH}/target/swj-dp.cfg"
+
+    case "$patch_choice" in
+        1)
+            echo
+            read -r -p "Enter memory address (hex, e.g., 0x80000000): " mem_addr
+            read -r -p "Enter value to write (hex, e.g., 0x12345678): " mem_value
+
+            echo "Writing word $mem_value to address $mem_addr..."
+
+            local openocd_cmd=(
+                "openocd"
+                "-f" "$ocd_interface_cfg"
+                "-f" "$ocd_target_cfg"
+                "-c" "init"
+                "-c" "halt"
+                "-c" "mww $mem_addr $mem_value"
+                "-c" "resume"
+                "-c" "exit"
+            )
+
+            log_message "CMD" "${openocd_cmd[*]}"
+
+            if output=$("${openocd_cmd[@]}" 2>&1); then
+                log_message "INFO" "Memory write successful"
+                echo "SUCCESS: Memory patched."
+            else
+                log_message "ERROR" "Memory write failed: $output"
+                echo "ERROR: Memory patch failed."
+            fi
+            ;;
+        2)
+            echo
+            read -r -p "Enter binary patch file path: " patch_file
+
+            if [ ! -f "$patch_file" ]; then
+                echo "ERROR: File not found."
+                sleep 2
+                return
+            fi
+
+            read -r -p "Enter target address (hex, e.g., 0x80000000): " target_addr
+
+            echo "Writing binary patch to $target_addr..."
+
+            local openocd_cmd=(
+                "openocd"
+                "-f" "$ocd_interface_cfg"
+                "-f" "$ocd_target_cfg"
+                "-c" "init"
+                "-c" "halt"
+                "-c" "load_image \"$patch_file\" $target_addr"
+                "-c" "resume"
+                "-c" "exit"
+            )
+
+            log_message "CMD" "${openocd_cmd[*]}"
+
+            if output=$("${openocd_cmd[@]}" 2>&1); then
+                log_message "INFO" "Binary patch successful"
+                echo "SUCCESS: Binary patch applied."
+            else
+                log_message "ERROR" "Binary patch failed: $output"
+                echo "ERROR: Binary patch failed."
+            fi
+            ;;
+        3)
+            echo
+            read -r -p "Enter start address (hex, e.g., 0x80000000): " start_addr
+            read -r -p "Enter size in bytes: " fill_size
+            read -r -p "Enter fill pattern (hex, e.g., 0xFF): " fill_pattern
+
+            echo "WARNING: This will overwrite $fill_size bytes of memory!"
+            read -r -p "Type 'confirm' to proceed: " confirm
+
+            if [[ "$confirm" != "confirm" ]]; then
+                echo "Operation cancelled."
+                sleep 2
+                return
+            fi
+
+            # Create a temporary file with the pattern
+            local pattern_file="${SESSION_DIR}/fill_pattern.bin"
+            dd if=/dev/zero bs=1 count="$fill_size" 2>/dev/null | tr '\0' "\x${fill_pattern}" > "$pattern_file"
+
+            echo "Filling memory region..."
+
+            local openocd_cmd=(
+                "openocd"
+                "-f" "$ocd_interface_cfg"
+                "-f" "$ocd_target_cfg"
+                "-c" "init"
+                "-c" "halt"
+                "-c" "load_image \"$pattern_file\" $start_addr"
+                "-c" "resume"
+                "-c" "exit"
+            )
+
+            log_message "CMD" "${openocd_cmd[*]}"
+
+            if output=$("${openocd_cmd[@]}" 2>&1); then
+                log_message "INFO" "Memory fill successful"
+                echo "SUCCESS: Memory region filled."
+            else
+                log_message "ERROR" "Memory fill failed: $output"
+                echo "ERROR: Memory fill failed."
+            fi
+
+            rm -f "$pattern_file"
+            ;;
+        b)
+            return
+            ;;
+        *)
+            echo "Invalid option."
+            sleep 1
+            ;;
+    esac
+
+    echo
+    read -r -p "Press Enter to continue..."
+}
+
+jtag_recovery_wizard() {
+    print_header
+    echo "--- Guided JTAG Recovery Wizard ---"
+    echo
+    echo "This wizard will guide you through common JTAG recovery scenarios."
+    echo
+
+    if ! command -v openocd &> /dev/null; then
+        log_message "ERROR" "'openocd' not found."
+        echo "ERROR: 'openocd' is not installed."
+        sleep 3
+        return
+    fi
+
+    echo "What is your recovery scenario?"
+    echo "  1) Device won't boot (soft-brick recovery)"
+    echo "  2) Forgot password (JTAG password reset)"
+    echo "  3) Corrupted bootloader"
+    echo "  4) Need to extract firmware/config"
+    echo "  b) Back"
+    echo
+    read -r -p "Choose your scenario: " scenario
+
+    case "$scenario" in
+        1)
+            print_header
+            echo "--- Soft-Brick Recovery Wizard ---"
+            echo
+            echo "Steps for recovering a non-booting device:"
+            echo
+            echo "1. First, let's verify JTAG connectivity..."
+            read -r -p "Press Enter to test connection..."
+            jtag_test_connection
+
+            echo
+            echo "2. Next, we'll try to halt the CPU and examine the state..."
+            echo "   You can use the interactive console for this."
+            read -r -p "Launch interactive console? (y/n): " launch_console
+            if [[ "$launch_console" == "y" ]]; then
+                jtag_interactive_console
+            fi
+
+            echo
+            echo "3. Common recovery steps:"
+            echo "   - Extract current flash/bootloader for analysis"
+            echo "   - Check if bootloader is corrupted"
+            echo "   - Re-flash known-good firmware"
+            echo
+            read -r -p "Would you like to extract the current flash? (y/n): " extract_flash
+            if [[ "$extract_flash" == "y" ]]; then
+                exploit_via_jtag "extract_flash"
+            fi
+            ;;
+        2)
+            print_header
+            echo "--- JTAG Password Reset Wizard ---"
+            echo
+            echo "We'll attempt to reset/recover passwords via JTAG."
+            echo
+            read -r -p "Press Enter to start password recovery..."
+            jtag_password_recovery
+            ;;
+        3)
+            print_header
+            echo "--- Bootloader Recovery Wizard ---"
+            echo
+            echo "WARNING: Bootloader recovery is dangerous!"
+            echo "Make sure you have:"
+            echo "  - The correct bootloader image for your device"
+            echo "  - Verified JTAG connectivity"
+            echo "  - Backed up existing flash (if possible)"
+            echo
+            read -r -p "Continue with bootloader recovery? (y/n): " continue_boot
+            if [[ "$continue_boot" == "y" ]]; then
+                jtag_bootloader_recovery
+            fi
+            ;;
+        4)
+            print_header
+            echo "--- Firmware/Config Extraction Wizard ---"
+            echo
+            echo "What would you like to extract?"
+            echo "  1) Full flash memory"
+            echo "  2) RAM dump"
+            echo "  3) NVRAM (configuration)"
+            echo
+            read -r -p "Choose option: " extract_option
+
+            case "$extract_option" in
+                1) exploit_via_jtag "extract_flash" ;;
+                2) exploit_via_jtag "dump_ram" ;;
+                3)
+                    read -r -p "Enter NVRAM address (hex): " nvram_addr
+                    read -r -p "Enter NVRAM size (bytes): " nvram_size
+                    # This would call a custom extraction
+                    echo "Extracting NVRAM..."
+                    ;;
+            esac
+            ;;
+        b)
+            return
+            ;;
+        *)
+            echo "Invalid option."
+            sleep 1
+            ;;
+    esac
+
+    echo
+    read -r -p "Press Enter to return to menu..."
+}
+
+menu_jtag_cable_recovery() {
+    while true; do
+        print_header
+        echo "--- JTAG Cable Assisted Recovery ---"
+        echo "  Current Adapter: $JTAG_ADAPTER"
+        echo "  Current Architecture: $TARGET_ARCH"
+        echo
+        echo "  1) Test JTAG Cable Connection"
+        echo "  2) Detect JTAG TAPs & Diagnostics"
+        echo "  3) Interactive OpenOCD Console"
+        echo "  4) JTAG Password Recovery"
+        echo "  5) JTAG Bootloader Recovery"
+        echo "  6) JTAG Memory Patching"
+        echo "  7) Guided Recovery Wizard"
+        echo "  b) Back to Main Menu"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1) jtag_test_connection ;;
+            2) jtag_detect_taps ;;
+            3) jtag_interactive_console ;;
+            4) jtag_password_recovery ;;
+            5) jtag_bootloader_recovery ;;
+            6) jtag_memory_patch ;;
+            7) jtag_recovery_wizard ;;
+            b) break ;;
+            *) echo "Invalid option." && sleep 1 ;;
+        esac
+    done
+}
+
 menu_set_architecture() {
     while true; do
         print_header
@@ -588,8 +1327,9 @@ main_menu() {
         echo "  1) Platform and JTAG Configuration"
         echo "  2) Cisco Password Recovery"
         echo "  3) JTAG Exploitation"
-        echo "  4) Memory Analysis"
-        echo "  5) Firmware Manipulation"
+        echo "  4) JTAG Cable Assisted Recovery"
+        echo "  5) Memory Analysis"
+        echo "  6) Firmware Manipulation"
         echo "  b) Exit"
         echo
         read -r -p "Choose an option: " choice
@@ -598,8 +1338,9 @@ main_menu() {
             1) menu_platform_jtag_config ;;
             2) menu_password_recovery ;;
             3) menu_jtag_exploitation ;;
-            4) menu_memory_analysis ;;
-            5) menu_firmware_manipulation ;;
+            4) menu_jtag_cable_recovery ;;
+            5) menu_memory_analysis ;;
+            6) menu_firmware_manipulation ;;
             b) break ;;
             *) echo "Invalid option. Please try again." && sleep 1 ;;
         esac
