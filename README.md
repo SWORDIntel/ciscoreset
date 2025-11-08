@@ -1,8 +1,8 @@
-# Cisco & Generic Embedded Advanced Recovery Tool v2.8
+# Cisco & Generic Embedded Advanced Recovery Tool v2.9
 
 ## Overview
 
-This script is a professional-grade, TUI-driven framework for multi-vector interaction with Cisco and other embedded devices. It combines serial console recovery, advanced JTAG exploitation, JTAG cable assisted recovery, firmware modification, advanced firmware analysis, and bootloader development tools for hardware reverse engineering and security auditing.
+This script is a professional-grade, TUI-driven framework for multi-vector interaction with Cisco and other embedded devices. It combines serial console recovery, advanced JTAG exploitation, JTAG cable assisted recovery, firmware modification, advanced firmware analysis, bootloader development, filesystem manipulation, automated exploit development, configuration management, and live memory manipulation for comprehensive hardware reverse engineering and security auditing.
 
 ## Features
 
@@ -128,6 +128,91 @@ Professional tools for bootloader modification and development:
     -   Create combined bootloader images with proper padding
     -   Export configurations for deployment
     -   Supports automatic script compilation with mkimage
+
+### Firmware Filesystem Tools (NEW)
+
+Complete workflow for extracting, modifying, and repackaging firmware filesystems:
+
+-   **Filesystem Extractor:**
+    -   Auto-detect and extract squashfs, cramfs, jffs2, yaffs2, ext2/3/4
+    -   4-step extraction process (scan, extract, analyze, security scan)
+    -   Automatic SUID binary detection
+    -   Quick credential search
+    -   File type breakdown analysis
+-   **Filesystem Modifier:**
+    -   Browse extracted filesystem
+    -   Edit configuration files with nano/vi
+    -   Replace binaries
+    -   Add/delete files
+    -   Modify permissions and ownership
+    -   Inject backdoor scripts (telnet, reverse shell, SSH keys)
+    -   Modify init scripts for persistence
+    -   Search for files
+-   **Filesystem Repackager:**
+    -   Rebuild SquashFS with custom compression (gzip, lzma, xz, lzo)
+    -   Create JFFS2 images with custom erase block/page sizes
+    -   Generate CPIO and TAR archives
+    -   Ready for flashing via JTAG or firmware update
+
+### Automated Exploit Development Tools (NEW)
+
+Accelerate exploit development with automated tools:
+
+-   **ROP Gadget Finder:**
+    -   Automatic gadget discovery using ROPgadget or objdump
+    -   Categorizes gadgets (pop/ret, mov/ret, call, jmp)
+    -   Address and offset information
+    -   Exports gadgets to categorized files
+-   **Shellcode Generator:**
+    -   Multi-architecture support (ARM, MIPS, x86, x86_64)
+    -   Payload types: reverse shell, bind shell, exec command, add user
+    -   Multiple output formats (raw, C, Python)
+    -   Manual shellcode templates for offline development
+    -   Integration with Metasploit's msfvenom
+-   **Buffer Overflow Detector:**
+    -   Binary security feature analysis (Stack canary, NX, PIE, RELRO)
+    -   Dangerous function detection (strcpy, gets, scanf, sprintf)
+    -   Format string vulnerability scanning
+    -   ASLR status detection
+    -   Comprehensive vulnerability reports
+
+### Configuration Management System (NEW)
+
+Streamline workflow with saved configurations and quick launch:
+
+-   **Profile Management:**
+    -   Save current platform, JTAG adapter, and architecture settings
+    -   Load saved profiles for quick configuration
+    -   Multiple profile support
+-   **Quick Launch Workflows:**
+    -   Quick Password Recovery (ISR pre-configured)
+    -   Quick JTAG Boot Intercept
+    -   Quick Firmware Extract & Modify
+    -   Quick Vulnerability Scan
+    -   Quick ROP Chain Development
+    -   One-command access to common workflows
+
+### Live Memory Manipulation During Boot (NEW)
+
+Powerful runtime memory and register manipulation via JTAG:
+
+-   **Memory Poke/Peek:**
+    -   Read memory at any address (with hex dump)
+    -   Write arbitrary values to memory
+    -   Dump memory ranges
+    -   Fill memory with patterns (NOP sleds, etc.)
+-   **Register Manipulation:**
+    -   Read all CPU registers
+    -   Read/modify specific registers
+    -   Set Program Counter (redirect execution)
+    -   Modify Stack Pointer
+    -   Real-time register dumps
+-   **Runtime Code Injection:**
+    -   Inject ARM/MIPS shellcode during execution
+    -   Inject code from files
+    -   Create NOP sleds at runtime
+    -   Load custom payloads into memory
+    -   Experimental feature for advanced exploitation
 
 ### Reverse Engineering & Analysis Menu
 

