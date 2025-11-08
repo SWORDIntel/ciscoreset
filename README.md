@@ -1,4 +1,4 @@
-# Cisco & Generic Embedded Advanced Recovery Tool v2.6
+# Cisco & Generic Embedded Advanced Recovery Tool v2.7
 
 ## Overview
 
@@ -51,6 +51,34 @@ This script is a professional-grade, TUI-driven framework for multi-vector inter
     -   Bootloader corruption recovery
     -   Firmware/config extraction
 
+### Firmware Modification Workshop (NEW)
+
+The ultimate toolkit for custom firmware development and modification:
+
+-   **Firmware Unpacker & Analyzer:**
+    -   Quick analysis (file type, entropy, signatures)
+    -   Full extraction with binwalk
+    -   Filesystem extraction and analysis
+    -   Embedded credential scanning
+    -   Automatic filesystem security analysis
+-   **Binary Firmware Patcher:**
+    -   Replace hex bytes at any offset
+    -   String replacement with automatic padding
+    -   NOP out signature checks (bypass validation)
+    -   Apply custom binary patch files
+    -   Modify embedded IPs/URLs
+    -   Perfect for creating custom firmware
+-   **Firmware Flash Workflow:**
+    -   Dump → Modify → Flash automated workflow
+    -   Quick patch and flash option
+    -   Integrated with JTAG boot interception
+    -   Safe backup before modifications
+-   **Boot Intercept Integration:**
+    -   Dump firmware while device is halted
+    -   Modify on-the-fly
+    -   Flash back immediately
+    -   All in one session!
+
 ### Reverse Engineering & Analysis Menu
 
 -   **Automated Filesystem Analysis:** A powerful feature that performs a security sweep on a `binwalk`-extracted filesystem. It automatically finds sensitive files, searches for hardcoded credentials, and analyzes executables.
@@ -71,6 +99,7 @@ This script is a professional-grade, TUI-driven framework for multi-vector inter
 -   **Core Dependencies:** `bash`, `stty`, `timeout`, `logger`, `lsusb`, `find`.
 -   **Analysis Dependencies:** `strings`, `binwalk`, `hexdump`, `grep`, `awk`.
 -   **JTAG Dependencies:** `openocd`.
+-   **Firmware Modification Dependencies:** `binwalk`, `xxd`, `dd` (for firmware workshop features).
 
 ## Usage
 
@@ -93,6 +122,31 @@ For JTAG-assisted password recovery on locked ISR devices:
    - Option 1 for NVRAM credential extraction
    - Option 6 to drop to manual console
 7. After modifications, resume boot (option 8) or keep halted for further analysis
+
+### Firmware Modification Workshop Workflow
+
+For custom firmware development:
+
+1. Navigate to "Firmware Modification Workshop" (menu option 5)
+2. **Analyze existing firmware:**
+   - Use "Firmware Unpacker & Analyzer" (option 1)
+   - Choose full extraction (option 2) to extract filesystem
+   - Analyze for credentials, configs, and binaries
+3. **Modify firmware:**
+   - Use "Binary Firmware Patcher" (option 2)
+   - Choose patch type (string replacement, hex editing, NOP injection)
+   - Creates `.patched` file automatically
+4. **Flash modified firmware:**
+   - Use "Firmware Flash Workflow" (option 3)
+   - Choose full workflow for dump → modify → flash
+   - Or use quick patch for simple string replacements
+
+**Advanced: Boot Intercept Integration:**
+- Start boot interception (Main → 4 → 4)
+- When halted, dump firmware (option 3)
+- Exit to Firmware Workshop (option 5)
+- Patch dumped firmware
+- Return to boot interception or use JTAG flash
 
 ## Disclaimer
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Cisco & Generic Embedded Advanced Recovery Tool v2.6
+# Cisco & Generic Embedded Advanced Recovery Tool v2.7
 #
 # A TUI-based toolkit for automating password recovery, JTAG exploitation,
-# JTAG cable assisted recovery, and firmware analysis on Cisco and other embedded devices.
+# JTAG cable assisted recovery, firmware modification, and firmware analysis on Cisco and other embedded devices.
 
 # Exit on error, undefined variable, or pipe failure
 set -euo pipefail
@@ -1805,6 +1805,473 @@ menu_jtag_cable_recovery() {
     done
 }
 
+# --- Firmware Modification Workshop ---
+
+firmware_unpack_analyze() {
+    print_header
+    echo "--- Firmware Unpacker & Analyzer ---"
+    echo
+    echo "This tool extracts and analyzes firmware images."
+    echo
+
+    if ! command -v binwalk &> /dev/null; then
+        log_message "WARN" "binwalk not found."
+        echo "WARNING: 'binwalk' is not installed. Some features may be limited."
+        echo "Install with: sudo apt-get install binwalk"
+        echo
+    fi
+
+    read -r -p "Enter firmware image path: " firmware_file
+
+    if [ ! -f "$firmware_file" ]; then
+        log_message "ERROR" "Firmware file not found: $firmware_file"
+        echo "ERROR: File not found at '$firmware_file'."
+        sleep 2
+        return
+    fi
+
+    local fw_work_dir="${SESSION_DIR}/firmware_analysis"
+    mkdir -p "$fw_work_dir"
+
+    echo "Firmware file: $firmware_file"
+    echo "Working directory: $fw_work_dir"
+    echo
+    echo "Analysis Options:"
+    echo "  1) Quick analysis (file type, entropy)"
+    echo "  2) Full extraction (binwalk -e)"
+    echo "  3) Signature scan only"
+    echo "  4) Extract filesystem and analyze"
+    echo "  5) Search for embedded credentials"
+    echo "  b) Back"
+    echo
+    read -r -p "Choose analysis type: " analysis_type
+
+    case "$analysis_type" in
+        1)
+            echo
+            echo "=== Quick Analysis ==="
+            echo
+            echo "File information:"
+            file "$firmware_file"
+            echo
+            echo "File size: $(du -h "$firmware_file" | cut -f1)"
+            echo
+
+            if command -v binwalk &> /dev/null; then
+                echo "Entropy analysis (checking for compression/encryption):"
+                binwalk -E "$firmware_file" 2>&1 | tail -20
+                echo
+                echo "Signature scan:"
+                binwalk "$firmware_file" | head -30
+            fi
+            ;;
+        2)
+            echo
+            echo "Extracting firmware with binwalk..."
+            cd "$fw_work_dir"
+
+            if binwalk -e "$firmware_file" 2>&1 | tee extraction.log; then
+                echo
+                echo "SUCCESS: Firmware extracted to:"
+                echo "$fw_work_dir"
+                echo
+                echo "Extracted contents:"
+                ls -lh "$fw_work_dir"
+                echo
+                echo "Searching for filesystems..."
+                find "$fw_work_dir" -type d -name "*filesystem*" -o -name "*rootfs*" -o -name "*squashfs-root*"
+                log_message "INFO" "Firmware extracted to $fw_work_dir"
+            else
+                echo "ERROR: Extraction failed. Check extraction.log"
+                log_message "ERROR" "Firmware extraction failed"
+            fi
+            cd - > /dev/null
+            ;;
+        3)
+            echo
+            echo "=== Signature Scan ==="
+            binwalk "$firmware_file" | tee "${fw_work_dir}/signatures.txt"
+            echo
+            echo "Signatures saved to: ${fw_work_dir}/signatures.txt"
+            ;;
+        4)
+            echo
+            echo "Extracting and analyzing filesystem..."
+            cd "$fw_work_dir"
+
+            binwalk -e "$firmware_file" 2>&1 | tee extraction.log
+
+            echo
+            echo "Searching for filesystem directories..."
+            local fs_dirs=$(find "$fw_work_dir" -type d \( -name "*filesystem*" -o -name "*rootfs*" -o -name "*squashfs-root*" \) | head -1)
+
+            if [ -n "$fs_dirs" ]; then
+                echo "Found filesystem: $fs_dirs"
+                echo
+                echo "=== Filesystem Analysis ==="
+                echo
+                echo "Directory structure:"
+                ls -lh "$fs_dirs" | head -20
+                echo
+                echo "Searching for sensitive files..."
+                find "$fs_dirs" -type f \( -name "*.conf" -o -name "*.cfg" -o -name "passwd" -o -name "shadow" -o -name "*.key" -o -name "*.pem" \) | head -20
+                echo
+                echo "Searching for scripts and binaries..."
+                find "$fs_dirs" -type f \( -name "*.sh" -o -perm -111 \) | head -20
+
+                log_message "INFO" "Filesystem analysis complete: $fs_dirs"
+            else
+                echo "No filesystem found in extraction."
+            fi
+            cd - > /dev/null
+            ;;
+        5)
+            echo
+            echo "=== Searching for Embedded Credentials ==="
+            echo
+            echo "Scanning for passwords, keys, and secrets..."
+            strings "$firmware_file" | grep -iE '(password|passwd|pwd|secret|api_key|private_key|rsa|ssh|enable)' | head -50 | tee "${fw_work_dir}/credentials.txt"
+            echo
+            echo "Results saved to: ${fw_work_dir}/credentials.txt"
+            log_message "INFO" "Credential scan complete"
+            ;;
+        b)
+            return
+            ;;
+        *)
+            echo "Invalid option."
+            sleep 1
+            return
+            ;;
+    esac
+
+    echo
+    read -r -p "Press Enter to continue..."
+}
+
+firmware_binary_patch() {
+    print_header
+    echo "--- Binary Firmware Patcher ---"
+    echo
+    echo "This tool allows you to patch firmware binaries."
+    echo
+
+    read -r -p "Enter firmware image path: " firmware_file
+
+    if [ ! -f "$firmware_file" ]; then
+        echo "ERROR: File not found at '$firmware_file'."
+        sleep 2
+        return
+    fi
+
+    local patched_file="${firmware_file}.patched"
+
+    echo
+    echo "Firmware: $firmware_file"
+    echo "Patched output: $patched_file"
+    echo
+    echo "Patch Options:"
+    echo "  1) Replace hex bytes at offset"
+    echo "  2) Replace string"
+    echo "  3) Patch out signature check (NOP specific bytes)"
+    echo "  4) Apply custom binary patch file"
+    echo "  5) Modify IP address/URL"
+    echo "  b) Back"
+    echo
+    read -r -p "Choose patch type: " patch_type
+
+    # Create working copy
+    cp "$firmware_file" "$patched_file"
+
+    case "$patch_type" in
+        1)
+            echo
+            read -r -p "Enter hex offset (e.g., 0x1000 or 4096): " offset
+            read -r -p "Enter hex bytes to write (e.g., 90 90 90 or 00 00): " hex_bytes
+
+            # Convert hex offset if needed
+            if [[ "$offset" =~ ^0x ]]; then
+                offset=$((offset))
+            fi
+
+            echo "Writing bytes at offset $offset..."
+
+            # Use xxd to patch
+            echo "$hex_bytes" | xxd -r -p | dd of="$patched_file" bs=1 seek="$offset" conv=notrunc 2>&1
+
+            if [ $? -eq 0 ]; then
+                echo "SUCCESS: Firmware patched."
+                echo "Patched file: $patched_file"
+                log_message "INFO" "Binary patch applied at offset $offset"
+            else
+                echo "ERROR: Patch failed."
+                log_message "ERROR" "Binary patch failed"
+            fi
+            ;;
+        2)
+            echo
+            read -r -p "Enter string to find: " find_str
+            read -r -p "Enter replacement string (same length recommended): " replace_str
+
+            echo "Searching for string '$find_str'..."
+
+            # Find offset of string
+            local offset=$(grep -abo "$find_str" "$patched_file" | head -1 | cut -d: -f1)
+
+            if [ -n "$offset" ]; then
+                echo "Found at offset: $offset"
+                echo "Replacing with: $replace_str"
+
+                # Pad replacement if needed
+                local find_len=${#find_str}
+                local replace_len=${#replace_str}
+
+                if [ $replace_len -lt $find_len ]; then
+                    # Pad with nulls
+                    replace_str="${replace_str}$(printf '\x00%.0s' $(seq 1 $((find_len - replace_len))))"
+                    echo "Padded replacement to match original length"
+                elif [ $replace_len -gt $find_len ]; then
+                    echo "WARNING: Replacement is longer than original. Truncating."
+                    replace_str="${replace_str:0:$find_len}"
+                fi
+
+                printf "%s" "$replace_str" | dd of="$patched_file" bs=1 seek="$offset" conv=notrunc 2>&1
+
+                echo "SUCCESS: String replaced."
+                log_message "INFO" "String patch applied: $find_str -> $replace_str"
+            else
+                echo "ERROR: String not found in firmware."
+            fi
+            ;;
+        3)
+            echo
+            echo "This will replace specified bytes with NOP instructions (0x90 for x86, 0x00 for ARM)"
+            echo
+            read -r -p "Enter offset to NOP (hex, e.g., 0x1000): " nop_offset
+            read -r -p "Enter number of bytes to NOP: " nop_count
+            read -r -p "NOP byte value (0x90 for x86, 0x00 for ARM) [90]: " nop_byte
+            nop_byte=${nop_byte:-90}
+
+            # Convert offset
+            if [[ "$nop_offset" =~ ^0x ]]; then
+                nop_offset=$((nop_offset))
+            fi
+
+            echo "NOPing $nop_count bytes at offset $nop_offset with 0x$nop_byte..."
+
+            # Create NOP sequence
+            yes "$nop_byte" | head -n "$nop_count" | xxd -r -p | dd of="$patched_file" bs=1 seek="$nop_offset" conv=notrunc 2>&1
+
+            echo "SUCCESS: Bytes NOPed."
+            echo "This may bypass signature checks if applied correctly."
+            log_message "INFO" "NOP patch applied at $nop_offset ($nop_count bytes)"
+            ;;
+        4)
+            echo
+            read -r -p "Enter patch file path (binary diff): " patch_file
+
+            if [ ! -f "$patch_file" ]; then
+                echo "ERROR: Patch file not found."
+                sleep 2
+                return
+            fi
+
+            read -r -p "Enter offset to apply patch: " patch_offset
+
+            if [[ "$patch_offset" =~ ^0x ]]; then
+                patch_offset=$((patch_offset))
+            fi
+
+            echo "Applying patch..."
+            dd if="$patch_file" of="$patched_file" bs=1 seek="$patch_offset" conv=notrunc 2>&1
+
+            echo "SUCCESS: Patch applied."
+            log_message "INFO" "Custom patch applied from $patch_file"
+            ;;
+        5)
+            echo
+            read -r -p "Enter IP/URL to find: " find_ip
+            read -r -p "Enter new IP/URL: " replace_ip
+
+            # Ensure same length
+            if [ ${#find_ip} -ne ${#replace_ip} ]; then
+                echo "WARNING: Strings are different lengths. Padding/truncating..."
+                if [ ${#replace_ip} -lt ${#find_ip} ]; then
+                    replace_ip=$(printf "%-${#find_ip}s" "$replace_ip")
+                else
+                    replace_ip="${replace_ip:0:${#find_ip}}"
+                fi
+            fi
+
+            echo "Searching for '$find_ip'..."
+            local offset=$(grep -abo "$find_ip" "$patched_file" | head -1 | cut -d: -f1)
+
+            if [ -n "$offset" ]; then
+                echo "Found at offset: $offset"
+                printf "%s" "$replace_ip" | dd of="$patched_file" bs=1 seek="$offset" conv=notrunc 2>&1
+                echo "SUCCESS: IP/URL modified."
+                log_message "INFO" "IP/URL patch: $find_ip -> $replace_ip"
+            else
+                echo "ERROR: IP/URL not found."
+            fi
+            ;;
+        b)
+            return
+            ;;
+        *)
+            echo "Invalid option."
+            sleep 1
+            return
+            ;;
+    esac
+
+    echo
+    echo "Patched firmware saved to: $patched_file"
+    echo "Original firmware unchanged: $firmware_file"
+    echo
+    read -r -p "Press Enter to continue..."
+}
+
+firmware_flash_workflow() {
+    print_header
+    echo "--- Firmware Flash Workflow ---"
+    echo
+    echo "This workflow guides you through flashing modified firmware."
+    echo
+
+    echo "Workflow:"
+    echo "  1. Dump current firmware (backup)"
+    echo "  2. Modify firmware (patch/customize)"
+    echo "  3. Flash modified firmware via JTAG"
+    echo "  4. Monitor boot and verify"
+    echo
+    echo "Current Status:"
+    echo "  Platform: $PLATFORM"
+    echo "  JTAG Adapter: $JTAG_ADAPTER"
+    echo "  Architecture: $TARGET_ARCH"
+    echo
+    echo "Options:"
+    echo "  1) Start full workflow (dump → modify → flash)"
+    echo "  2) Dump current firmware only"
+    echo "  3) Flash pre-modified firmware"
+    echo "  4) Quick patch and flash"
+    echo "  b) Back"
+    echo
+    read -r -p "Choose option: " workflow_choice
+
+    case "$workflow_choice" in
+        1)
+            echo
+            echo "=== Step 1: Dump Current Firmware ==="
+            echo "First, let's backup the current firmware..."
+            read -r -p "Press Enter to dump firmware via JTAG..."
+
+            exploit_via_jtag "extract_flash"
+
+            echo
+            echo "=== Step 2: Modify Firmware ==="
+            read -r -p "Ready to modify firmware? (y/n): " ready_modify
+
+            if [[ "$ready_modify" == "y" ]]; then
+                firmware_binary_patch
+            fi
+
+            echo
+            echo "=== Step 3: Flash Modified Firmware ==="
+            read -r -p "Ready to flash modified firmware? (y/n): " ready_flash
+
+            if [[ "$ready_flash" == "y" ]]; then
+                jtag_flash_write
+            fi
+
+            echo
+            echo "Workflow complete. Monitor serial console for boot messages."
+            ;;
+        2)
+            exploit_via_jtag "extract_flash"
+            ;;
+        3)
+            echo
+            echo "Flashing pre-modified firmware..."
+            jtag_flash_write
+            ;;
+        4)
+            echo
+            echo "Quick patch workflow:"
+            echo "This will prompt for a simple patch, then flash immediately."
+            echo
+            read -r -p "Enter firmware to patch: " quick_fw
+
+            if [ ! -f "$quick_fw" ]; then
+                echo "ERROR: File not found."
+                sleep 2
+                return
+            fi
+
+            # Quick string replacement
+            read -r -p "Enter string to replace: " quick_find
+            read -r -p "Enter replacement: " quick_replace
+
+            local quick_patched="${quick_fw}.quick_patched"
+            cp "$quick_fw" "$quick_patched"
+
+            local offset=$(grep -abo "$quick_find" "$quick_patched" | head -1 | cut -d: -f1)
+            if [ -n "$offset" ]; then
+                printf "%s" "$quick_replace" | dd of="$quick_patched" bs=1 seek="$offset" conv=notrunc 2>&1
+                echo "Patched! Now flashing..."
+                echo
+
+                # Flash it
+                jtag_flash_write
+            else
+                echo "ERROR: String not found."
+            fi
+            ;;
+        b)
+            return
+            ;;
+        *)
+            echo "Invalid option."
+            sleep 1
+            ;;
+    esac
+
+    echo
+    read -r -p "Press Enter to continue..."
+}
+
+menu_firmware_workshop() {
+    while true; do
+        print_header
+        echo "--- Firmware Modification Workshop ---"
+        echo
+        echo "  1) Firmware Unpacker & Analyzer"
+        echo "  2) Binary Firmware Patcher"
+        echo "  3) Firmware Flash Workflow (Dump → Modify → Flash)"
+        echo "  4) Extract from Halted Device (Boot Intercept Integration)"
+        echo "  b) Back to Main Menu"
+        echo
+        read -r -p "Choose an option: " choice
+
+        case "$choice" in
+            1) firmware_unpack_analyze ;;
+            2) firmware_binary_patch ;;
+            3) firmware_flash_workflow ;;
+            4)
+                echo
+                echo "This option requires boot interception to be active."
+                echo "Use: Main Menu → JTAG Cable Assisted Recovery → Automated Boot Interception"
+                echo "Then use option 3 (Dump Firmware/Flash) from the post-interrupt menu."
+                read -r -p "Press Enter to continue..."
+                ;;
+            b) break ;;
+            *) echo "Invalid option." && sleep 1 ;;
+        esac
+    done
+}
+
+# --- End Firmware Modification Workshop ---
+
 menu_set_architecture() {
     while true; do
         print_header
@@ -1860,8 +2327,9 @@ main_menu() {
         echo "  2) Cisco Password Recovery"
         echo "  3) JTAG Exploitation"
         echo "  4) JTAG Cable Assisted Recovery"
-        echo "  5) Memory Analysis"
-        echo "  6) Firmware Manipulation"
+        echo "  5) Firmware Modification Workshop"
+        echo "  6) Memory Analysis"
+        echo "  7) Firmware Manipulation"
         echo "  b) Exit"
         echo
         read -r -p "Choose an option: " choice
@@ -1871,8 +2339,9 @@ main_menu() {
             2) menu_password_recovery ;;
             3) menu_jtag_exploitation ;;
             4) menu_jtag_cable_recovery ;;
-            5) menu_memory_analysis ;;
-            6) menu_firmware_manipulation ;;
+            5) menu_firmware_workshop ;;
+            6) menu_memory_analysis ;;
+            7) menu_firmware_manipulation ;;
             b) break ;;
             *) echo "Invalid option. Please try again." && sleep 1 ;;
         esac
